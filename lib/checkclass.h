@@ -111,6 +111,7 @@ private:
     // Reporting errors..
     void noConstructorError(const Token *tok, const std::string &classname, bool isStruct);
     void uninitVarError(const Token *tok, const std::string &classname, const std::string &varname);
+    void virtualFuncInConstructorError(const Token *tok, const std::string &classname, const std::string &funcname);
     void operatorEqVarError(const Token *tok, const std::string &classname, const std::string &varname);
     void unusedPrivateFunctionError(const Token *tok, const std::string &classname, const std::string &funcname);
     void memsetError(const Token *tok, const std::string &memfunc, const std::string &classname, const std::string &type);

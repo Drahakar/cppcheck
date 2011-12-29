@@ -77,6 +77,9 @@ private:
         TEST_CASE(initvar_nested_constructor); // ticket #1375
         TEST_CASE(initvar_nocopy1);            // ticket #2474
         TEST_CASE(initvar_nocopy2);            // ticket #2484
+         
+        TEST_CASE(virtualmethod_callinconstructor); // ticket #209
+        TEST_CASE(virtualmethod_callinconstructor1);
 
         TEST_CASE(initvar_destructor);      // No variables need to be initialized in a destructor
 
@@ -1012,6 +1015,55 @@ private:
               "};\n");
         ASSERT_EQUALS("[test.cpp:12]: (warning) Member variable 'A::m_SemVar' is not initialized in the constructor.\n"
                       "[test.cpp:13]: (warning) Member variable 'A::m_SemVar' is not assigned a value in 'A::operator='\n", errout.str());
+    }
+
+    //Call of a virtual method in its own constructor is a bad practice and can lead to undefined behavior
+    void virtualmethod_callinconstructor() {
+        check("#include <stdio.h>\n"
+               " class A\n"
+               " {	\n"
+               "     public:\n"
+               "         virtual void init() {}\n"
+               "         A() { c(); }\n"
+               " };\n"
+               " class G : public A\n"
+               " {   \n"
+               "     public:\n"
+               "        const char *g;\n"
+               "        virtual void init() { g = \"a\"; }\n"
+               " };\n"
+               " int main()\n"
+               " {\n"
+               "     G g;\n"
+               "     g.init();\n"
+               "     return 0;\n"
+               " }\n");
+        ASSERT_EQUALS("[test.cpp:6]: (warning) virtual functions 'init' should not be called in the constructor of 'A'.\n", errout.str());
+    }
+
+    //Call of a virtual function of an other class should not trigger a warning
+    void virtualmethod_callinconstructor1() {
+        check("#include <stdio.h>"
+               " class A"
+               " {	"
+               "     public:"
+               "         virtual void init() {}"
+               " };"
+               " class G"
+               " {   "
+               "     public:"
+               "        G() "
+               "        {"
+               "         A a;"
+               "         a.init();"
+               "        }"
+               " };"
+               " int main()"
+               " {"
+               "     G g;"
+               "     return 0;"
+               " }");
+        ASSERT_EQUALS("", errout.str());
     }
 
     void initvar_destructor() {

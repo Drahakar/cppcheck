@@ -96,6 +96,14 @@ void CheckClass::constructors()
                                     func->type == Function::eOperatorEqual))
                 continue;
 
+            //Check if the constructor is calling virtual functions
+            std::list<Function>::const_iterator calledfunc;
+            for(calledfunc = scope->functionList.begin(); calledfunc != scope->functionList.end(); ++calledfunc)
+            {
+                if(calledfunc->isVirtual && func->type == Function::eConstructor)
+                   virtualFuncInConstructorError(func->token, scope->className, calledfunc->functionScope->className);
+            }
+
             // Mark all variables not used
             clearAllVar(usage);
 
@@ -509,6 +517,10 @@ void CheckClass::operatorEqVarError(const Token *tok, const std::string &classna
     reportError(tok, Severity::warning, "operatorEqVarError", "Member variable '" + classname + "::" + varname + "' is not assigned a value in '" + classname + "::operator=" + "'");
 }
 
+void CheckClass::virtualFuncInConstructorError(const Token *tok, const std::string &classname, const std::string &funcname)
+{
+    reportError(tok, Severity::warning, "virtualFunkInConstructorError", "virtual functions '" + funcname + "' should not be called in the constructor of '" + classname +  "'.");
+}
 //---------------------------------------------------------------------------
 // ClassCheck: Unused private functions
 //---------------------------------------------------------------------------

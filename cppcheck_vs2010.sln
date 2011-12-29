@@ -1,5 +1,5 @@
 Microsoft Visual Studio Solution File, Format Version 11.00
-# Visual C++ Express 2010
+# Visual Studio 2010
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "cppcheck", "cli\cppcheck.vcxproj", "{35CBDF51-2456-3EC3-99ED-113C30858883}"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "testrunner", "test\testrunner.vcxproj", "{85797CCB-B0A5-37DB-86F2-CD9253A07364}"
