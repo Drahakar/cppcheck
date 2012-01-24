@@ -1,6 +1,6 @@
 /*
  * Cppcheck - A tool for static C/C++ code analysis
- * Copyright (C) 2007-2011 Daniel Marjamäki and Cppcheck team.
+ * Copyright (C) 2007-2012 Daniel Marjamäki and Cppcheck team.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -74,7 +74,7 @@ private:
     }
 
     void deallocThrowError(const Token * const tok, const std::string &varname) {
-        reportError(tok, Severity::error, "exceptDeallocThrow", "Throwing exception in invalid state, " + varname + " points at deallocated memory");
+        reportError(tok, Severity::warning, "exceptDeallocThrow", "Throwing exception in invalid state, " + varname + " points at deallocated memory");
     }
 
     void rethrowCopyError(const Token * const tok, const std::string &varname) {

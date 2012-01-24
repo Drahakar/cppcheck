@@ -1,6 +1,6 @@
 /*
  * Cppcheck - A tool for static C/C++ code analysis
- * Copyright (C) 2007-2011 Daniel Marjamäki and Cppcheck team.
+ * Copyright (C) 2007-2012 Daniel Marjamäki and Cppcheck team.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -81,7 +81,7 @@ public:
     void clear() {
         _varUsage.clear();
     }
-    const VariableMap &varUsage() {
+    const VariableMap &varUsage() const {
         return _varUsage;
     }
     void addVar(const Token *name, VariableType type, const Scope *scope, bool write_);
@@ -600,7 +600,7 @@ void CheckUnusedVar::checkFunctionVariableUsage_iterateScopes(const Scope* const
             type = Variables::reference;
         else if (i->nameToken()->previous()->str() == "*" && i->nameToken()->strAt(-2) == "*")
             type = Variables::pointerPointer;
-        else if (i->nameToken()->previous()->str() == "*" || i->nameToken()->strAt(-2) == "*")
+        else if (i->nameToken()->previous()->str() == "*" || Token::Match(i->nameToken()->tokAt(-2), "* %type%"))
             type = Variables::pointer;
         else if (i->typeEndToken()->isStandardType() || isRecordTypeWithoutSideEffects(*i) || Token::simpleMatch(i->nameToken()->tokAt(-3), "std :: string"))
             type = Variables::standard;
@@ -621,15 +621,15 @@ void CheckUnusedVar::checkFunctionVariableUsage_iterateScopes(const Scope* const
         if (i->isArray() && Token::Match(i->nameToken(), "%var% [ %var% ]")) // Array index variable read.
             variables.read(i->nameToken()->tokAt(2)->varId());
 
-        if (Token::simpleMatch(defValTok, "= {")) {
-            for (const Token* tok = defValTok; tok && tok != defValTok->linkAt(1); tok = tok->next())
-                if (Token::Match(tok, "%var%")) // Variables used to initialize the array read.
-                    variables.read(tok->varId());
+        if (defValTok && defValTok->str() == "=") {
+            if (defValTok->next() && defValTok->next()->str() == "{") {
+                for (const Token* tok = defValTok; tok && tok != defValTok->linkAt(1); tok = tok->next())
+                    if (Token::Match(tok, "%var%")) // Variables used to initialize the array read.
+                        variables.read(tok->varId());
+            } else
+                doAssignment(variables, i->nameToken(), false, scope);
         } else if (Token::Match(defValTok, "( %var% )")) // Variables used to initialize the variable read.
             variables.readAll(defValTok->next()->varId()); // ReadAll?
-        else if (defValTok->str() == "=") {
-            doAssignment(variables, i->nameToken(), false, scope);
-        }
     }
 
     // Check variable usage
@@ -662,20 +662,17 @@ void CheckUnusedVar::checkFunctionVariableUsage_iterateScopes(const Scope* const
             break;
         }
 
-        if (Token::Match(tok, "%type% const| *|&| const| *| const| %var% ;|[|,|)|=|(") && tok->str() != "return" && tok->str() != "throw") { // Declaration: Skip
-            const Token* old = tok;
+        if (Token::Match(tok, "%type% const| *|&| const| *| const| %var% [;=[(]") && tok->str() != "return" && tok->str() != "throw") { // Declaration: Skip
             tok = tok->next();
             while (Token::Match(tok, "const|*|&"))
                 tok = tok->next();
-            tok = Token::findmatch(tok, "[,;)=(]");
+            tok = Token::findmatch(tok, "[;=[(]");
             if (tok && Token::Match(tok, "( %var% )")) // Simple initialization through copy ctor
                 tok = tok->next();
             else if (tok && Token::Match(tok, "= %var% ;")) // Simple initialization
                 tok = tok->next();
             if (!tok)
                 break;
-            if (tok->str() == ")" && tok->link() && Token::Match(tok->link()->previous(), "if|for|while"))
-                tok = old;
         }
         // Freeing memory (not considered "using" the pointer if it was also allocated in this function)
         if (Token::Match(tok, "free|g_free|kfree|vfree ( %var% )") ||
@@ -699,8 +696,14 @@ void CheckUnusedVar::checkFunctionVariableUsage_iterateScopes(const Scope* const
             }
         }
 
-        else if (Token::Match(tok, "return|throw %var%"))
-            variables.readAll(tok->next()->varId());
+        else if (Token::Match(tok, "return|throw %var%")) {
+            for (const Token *tok2 = tok->next(); tok2; tok2 = tok2->next()) {
+                if (tok2->varId())
+                    variables.readAll(tok2->varId());
+                else if (tok2->str() == ";")
+                    break;
+            }
+        }
 
         // assignment
         else if (!Token::Match(tok->tokAt(-2), "[;{}.] %var% (") &&
@@ -932,7 +935,7 @@ void CheckUnusedVar::checkFunctionVariableUsage()
                 unusedVariableError(usage._name, varname);
 
             // variable has not been written but has been modified
-            else if (usage._modified && !usage._write)
+            else if (usage._modified && !usage._write && !usage._allocateMemory)
                 unassignedVariableError(usage._name, varname);
 
             // variable has been written but not read

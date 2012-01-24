@@ -1,6 +1,6 @@
 /*
  * Cppcheck - A tool for static C/C++ code analysis
- * Copyright (C) 2007-2011 Daniel Marjamäki and Cppcheck team.
+ * Copyright (C) 2007-2012 Daniel Marjamäki and Cppcheck team.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -557,6 +557,9 @@ public:
      * @return true if array, false if not
      */
     bool arrayDimensions(std::vector<Dimension> &dimensions, const Token *tok) const;
+
+    void printOut(const char * title = NULL) const;
+    void printVariable(const Variable *var, const char *indent) const;
 
 private:
 

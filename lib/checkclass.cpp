@@ -1,6 +1,6 @@
 /*
  * Cppcheck - A tool for static C/C++ code analysis
- * Copyright (C) 2007-2011 Daniel Marjamäki and Cppcheck team.
+ * Copyright (C) 2007-2012 Daniel Marjamäki and Cppcheck team.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -150,8 +150,11 @@ void CheckClass::constructors()
 
                     if (classNameUsed)
                         operatorEqVarError(func->token, scope->className, var->name());
-                } else if (func->access != Private)
-                    uninitVarError(func->token, scope->className, var->name());
+                } else if (func->access != Private) {
+                    const Scope *varType = var->type();
+                    if (!varType || varType->type != Scope::eUnion)
+                        uninitVarError(func->token, scope->className, var->name());
+                }
             }
         }
     }
@@ -447,15 +450,7 @@ void CheckClass::initializeVarList(const Function &func, std::list<std::string> 
                 // the function is external and it's neither friend nor inherited virtual function.
                 // assume all variables that are passed to it are initialized..
                 else {
-                    unsigned int indentlevel2 = 0;
-                    for (const Token *tok = ftok->tokAt(2); tok; tok = tok->next()) {
-                        if (tok->str() == "(")
-                            ++indentlevel2;
-                        else if (tok->str() == ")") {
-                            if (indentlevel2 == 0)
-                                break;
-                            --indentlevel2;
-                        }
+                    for (const Token *tok = ftok->tokAt(2); tok && tok != ftok->next()->link(); tok = tok->next()) {
                         if (tok->isName()) {
                             assignVar(tok->str(), scope, usage);
                         }
@@ -654,16 +649,9 @@ void CheckClass::noMemset()
     std::list<Scope>::const_iterator scope;
 
     for (scope = symbolDatabase->scopeList.begin(); scope != symbolDatabase->scopeList.end(); ++scope) {
-        std::list<Function>::const_iterator func;
-
-        for (func = scope->functionList.begin(); func != scope->functionList.end(); ++func) {
-            // only check functions with bodies
-            if (!func->hasBody)
-                continue;
-
+        if (scope->type == Scope::eFunction) {
             // Locate all 'memset' tokens..
-            const Token *end = func->start->link();
-            for (const Token *tok = func->start; tok && tok != end; tok = tok->next()) {
+            for (const Token *tok = scope->classStart; tok && tok != scope->classEnd; tok = tok->next()) {
                 if (!Token::Match(tok, "memset|memcpy|memmove"))
                     continue;
 
@@ -1253,7 +1241,7 @@ void CheckClass::checkConst()
                     }
 
                     // get function name
-                    std::string functionName((func->tokenDef->isName() ? "" : "operator") + func->tokenDef->str());
+                    std::string functionName = (func->tokenDef->isName() ? "" : "operator") + func->tokenDef->str();
 
                     if (func->tokenDef->str() == "(")
                         functionName += ")";

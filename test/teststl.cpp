@@ -1,6 +1,6 @@
 /*
  * Cppcheck - A tool for static C/C++ code analysis
- * Copyright (C) 2007-2011 Daniel Marjamäki and Cppcheck team.
+ * Copyright (C) 2007-2012 Daniel Marjamäki and Cppcheck team.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -1107,17 +1107,87 @@ private:
         // set::find
         // ---------------------------
 
-        // error
+        // error (simple)
         check("void f(std::set<int> s)\n"
               "{\n"
               "    if (s.find(12)) { }\n"
               "}\n");
         ASSERT_EQUALS("[test.cpp:3]: (warning) Suspicious condition. The result of find is an iterator, but it is not properly checked.\n", errout.str());
 
-        // ok
+        // error (pointer)
+        check("void f(std::set<int> *s)\n"
+              "{\n"
+              "    if (*s.find(12)) { }\n"
+              "}\n");
+        ASSERT_EQUALS("[test.cpp:3]: (warning) Suspicious condition. The result of find is an iterator, but it is not properly checked.\n", errout.str());
+
+        // error (array-like pointer)
+        check("void f(std::set<int> *s)\n"
+              "{\n"
+              "    if (s[0].find(12)) { }\n"
+              "}\n");
+        ASSERT_EQUALS("[test.cpp:3]: (warning) Suspicious condition. The result of find is an iterator, but it is not properly checked.\n", errout.str());
+
+        // error (array)
+        check("void f(std::set<int> s [10])\n"
+              "{\n"
+              "    if (s[0].find(12)) { }\n"
+              "}\n");
+        ASSERT_EQUALS("[test.cpp:3]: (warning) Suspicious condition. The result of find is an iterator, but it is not properly checked.\n", errout.str());
+
+        // error (undefined length array)
+        check("void f(std::set<int> s [])\n"
+              "{\n"
+              "    if (s[0].find(12)) { }\n"
+              "}\n");
+        ASSERT_EQUALS("[test.cpp:3]: (warning) Suspicious condition. The result of find is an iterator, but it is not properly checked.\n", errout.str());
+
+        // error (vector)
+        check("void f(std::vector<std::set<int> > s)\n"
+              "{\n"
+              "    if (s[0].find(12)) { }\n"
+              "}\n");
+        ASSERT_EQUALS("[test.cpp:3]: (warning) Suspicious condition. The result of find is an iterator, but it is not properly checked.\n", errout.str());
+
+        // ok (simple)
         check("void f(std::set<int> s)\n"
               "{\n"
               "    if (s.find(123) != s.end()) { }\n"
+              "}\n");
+        ASSERT_EQUALS("", errout.str());
+
+        // ok (pointer)
+        check("void f(std::set<int> *s)\n"
+              "{\n"
+              "    if (*s.find(12) != s.end()) { }\n"
+              "}\n");
+        ASSERT_EQUALS("", errout.str());
+
+        // ok (array-like pointer)
+        check("void f(std::set<int> *s)\n"
+              "{\n"
+              "    if (s[0].find(12) != s.end()) { }\n"
+              "}\n");
+        ASSERT_EQUALS("", errout.str());
+
+        // ok (array)
+        check("void f(std::set<int> s [10])\n"
+              "{\n"
+              "    if (s[0].find(123) != s.end()) { }\n"
+              "}\n");
+        ASSERT_EQUALS("", errout.str());
+
+        // ok (undefined length array)
+        check("void f(std::set<int> s [])\n"
+              "{\n"
+              "    if (s[0].find(123) != s.end()) { }\n"
+              "}\n");
+        ASSERT_EQUALS("", errout.str());
+
+        // ok (vector)
+        check("void f(std::vector<std::set<int> > s)\n"
+              "{\n"
+              "    if (s[0].find(123) != s.end()) { }\n"
               "}\n");
         ASSERT_EQUALS("", errout.str());
 
@@ -1142,10 +1212,24 @@ private:
     }
 
     void if_str_find() {
-        // error
+        // error (simple)
         check("void f(const std::string &s)\n"
               "{\n"
               "    if (s.find(\"abc\")) { }\n"
+              "}\n");
+        ASSERT_EQUALS("[test.cpp:3]: (warning) Suspicious checking of string::find() return value.\n", errout.str());
+
+        // error (pointer)
+        check("void f(const std::string *s)\n"
+              "{\n"
+              "    if (*s.find(\"abc\")) { }\n"
+              "}\n");
+        ASSERT_EQUALS("[test.cpp:3]: (warning) Suspicious checking of string::find() return value.\n", errout.str());
+
+        // error (vector)
+        check("void f(const std::vector<std::string> &s)\n"
+              "{\n"
+              "    if (s[0].find(\"abc\")) { }\n"
               "}\n");
         ASSERT_EQUALS("[test.cpp:3]: (warning) Suspicious checking of string::find() return value.\n", errout.str());
     }

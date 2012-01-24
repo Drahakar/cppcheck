@@ -1,6 +1,6 @@
 /*
  * Cppcheck - A tool for static C/C++ code analysis
- * Copyright (C) 2007-2011 Daniel Marjamäki and Cppcheck team.
+ * Copyright (C) 2007-2012 Daniel Marjamäki and Cppcheck team.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -81,6 +81,7 @@
 #define PROGRESS_MAX                    1024.0
 
 #define SETTINGS_CHECKED_PLATFORM       "Checked platform"
+#define SETTINGS_LAST_PROJECT_PATH      "Last project path"
 
 /// @}
 #endif

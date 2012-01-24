@@ -1,6 +1,6 @@
 /*
  * Cppcheck - A tool for static C/C++ code analysis
- * Copyright (C) 2007-2011 Daniel Marjamäki and Cppcheck team.
+ * Copyright (C) 2007-2012 Daniel Marjamäki and Cppcheck team.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -193,6 +193,10 @@ void Token::replace(Token *replaceThis, Token *start, Token *end)
             end = end->next();
         *(end->tokensBack) = end;
     }
+
+    // Update _progressValue, fileIndex and linenr
+    for (Token *tok = start; tok != end->next(); tok = tok->next())
+        tok->_progressValue = replaceThis->_progressValue;
 
     // Delete old token, which is replaced
     delete replaceThis;
@@ -537,17 +541,7 @@ bool Token::Match(const Token *tok, const char pattern[], unsigned int varid)
                     patternUnderstood = true;
                 } else { // %varid%
                     if (varid == 0) {
-                        std::list<ErrorLogger::ErrorMessage::FileLocation> locationList;
-                        ErrorLogger::ErrorMessage::FileLocation loc;
-                        loc.line = tok->linenr();
-                        loc.setfile("");
-                        locationList.push_back(loc);
-                        const ErrorLogger::ErrorMessage errmsg(locationList,
-                                                               Severity::error,
-                                                               "Internal error. Token::Match called with varid 0.",
-                                                               "cppcheckError",
-                                                               false);
-                        throw *tok;
+                        throw InternalError(tok, "Internal error. Token::Match called with varid 0. Please report this to Cppcheck developers");
                     }
 
                     if (tok->varId() != varid)
@@ -788,7 +782,7 @@ void Token::move(Token *srcStart, Token *srcEnd, Token *newLocation)
     newLocation->next(srcStart);
 
     // Update _progressValue
-    for (Token *tok = srcStart; tok && tok != srcEnd; tok = tok->next())
+    for (Token *tok = srcStart; tok != srcEnd->next(); tok = tok->next())
         tok->_progressValue = newLocation->_progressValue;
 }
 
@@ -893,6 +887,9 @@ void Token::printOut(const char *title, const std::vector<std::string> &fileName
 
 std::string Token::stringify(const Token* end) const
 {
+    if (this == end)
+        return "";
+
     std::ostringstream ret;
 
     if (isUnsigned())

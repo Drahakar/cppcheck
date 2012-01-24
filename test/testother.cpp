@@ -1,6 +1,6 @@
 /*
  * Cppcheck - A tool for static C/C++ code analysis
- * Copyright (C) 2007-2011 Daniel Marjamäki and Cppcheck team.
+ * Copyright (C) 2007-2012 Daniel Marjamäki and Cppcheck team.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -88,6 +88,7 @@ private:
         TEST_CASE(testScanf1);
         TEST_CASE(testScanf2);
         TEST_CASE(testScanf3);
+        TEST_CASE(testScanf4);
 
         TEST_CASE(testScanfArgument);
         TEST_CASE(testPrintfArgument);
@@ -153,6 +154,8 @@ private:
 
         TEST_CASE(checkForSuspiciousSemicolon1);
         TEST_CASE(checkForSuspiciousSemicolon2);
+
+        TEST_CASE(checkDoubleFree);
     }
 
     void check(const char code[], const char *filename = NULL, bool experimental = false) {
@@ -175,7 +178,6 @@ private:
 
         // Simplify token list..
         tokenizer.simplifyTokenList();
-
         checkOther.runSimplifiedChecks(&tokenizer, &settings, this);
     }
 
@@ -209,13 +211,13 @@ private:
         settings.experimental = true;
 
         // Preprocess file..
-        Preprocessor preprocessor(&settings, this);
+        SimpleSuppressor logger(settings, this);
+        Preprocessor preprocessor(&settings, &logger);
         std::list<std::string> configurations;
         std::string filedata = "";
         std::istringstream fin(precode);
         preprocessor.preprocess(fin, filedata, configurations, filename, settings._includePaths);
-        SimpleSuppressor logger(settings, this);
-        const std::string code = Preprocessor::getcode(filedata, "", filename, &settings, &logger);
+        const std::string code = preprocessor.getcode(filedata, "", filename);
 
         // Tokenize..
         Tokenizer tokenizer(&settings, &logger);
@@ -929,6 +931,9 @@ private:
               "}");
         ASSERT_EQUALS("", errout.str());
 
+        // #3473 - no warning if "log" is a variable
+        check("Fred::Fred() : log(0) { }");
+        ASSERT_EQUALS("", errout.str());
 
         // acos
         check("void foo()\n"
@@ -1919,6 +1924,33 @@ private:
               "}");
         ASSERT_EQUALS("", errout.str());
 
+        check("int foo() {\n"
+              "    goto label;\n"
+              "    while (true) {\n"
+              "     bar();\n"
+              "     label:\n"
+              "    }\n"
+              "}");
+        ASSERT_EQUALS("", errout.str()); // #3457
+
+        check("int foo() {\n"
+              "    goto label;\n"
+              "    do {\n"
+              "     bar();\n"
+              "     label:\n"
+              "    } while (true);\n"
+              "}");
+        ASSERT_EQUALS("", errout.str()); // #3457
+
+        check("int foo() {\n"
+              "    goto label;\n"
+              "    for (;;) {\n"
+              "     bar();\n"
+              "     label:\n"
+              "    }\n"
+              "}");
+        ASSERT_EQUALS("", errout.str()); // #3457
+
         check("%: return ; ()"); // Don't crash. #3441.
     }
 
@@ -1996,12 +2028,10 @@ private:
               "    b = fscanf(file, \"aa%%ds\", &a);\n"
               "    fclose(file);\n"
               "    return b;\n"
-              "}\n",
-              "test.cpp",
-              true);
-        ASSERT_EQUALS("[test.cpp:6]: (warning) scanf without field width limits can crash with huge input data\n"
-                      "[test.cpp:7]: (warning) scanf without field width limits can crash with huge input data\n"
-                      "[test.cpp:8]: (warning) fscanf format string has 0 parameters but 1 are given\n", errout.str());
+              "}");
+        ASSERT_EQUALS("[test.cpp:8]: (warning) fscanf format string has 0 parameters but 1 are given\n"
+                      "[test.cpp:6]: (warning) scanf without field width limits can crash with huge input data\n"
+                      "[test.cpp:7]: (warning) scanf without field width limits can crash with huge input data\n", errout.str());
     }
 
     void testScanf2() {
@@ -2015,12 +2045,10 @@ private:
               "    b = fscanf(file, \"aa%%ds\", &a);\n"
               "    fclose(file);\n"
               "    return b;\n"
-              "}\n",
-              "test.cpp",
-              true);
-        ASSERT_EQUALS("[test.cpp:6]: (warning) scanf without field width limits can crash with huge input data\n"
-                      "[test.cpp:7]: (warning) scanf without field width limits can crash with huge input data\n"
-                      "[test.cpp:8]: (warning) fscanf format string has 0 parameters but 1 are given\n", errout.str());
+              "}");
+        ASSERT_EQUALS("[test.cpp:8]: (warning) fscanf format string has 0 parameters but 1 are given\n"
+                      "[test.cpp:6]: (warning) scanf without field width limits can crash with huge input data\n"
+                      "[test.cpp:7]: (warning) scanf without field width limits can crash with huge input data\n", errout.str());
     }
 
     void testScanf3() {
@@ -2033,9 +2061,7 @@ private:
               "    c = fscanf(file, \"%[^ ] %d\n\", a, &b);\n"
               "    fclose(file);\n"
               "    return c;\n"
-              "}\n",
-              "test.cpp",
-              true);
+              "}");
         ASSERT_EQUALS("", errout.str());
 
         check("#include <stdio.h>\n"
@@ -2047,10 +2073,16 @@ private:
               "    b = fscanf(file, \"%[^ \n\", a);\n"
               "    fclose(file);\n"
               "    return b;\n"
-              "}\n",
-              "test.cpp",
-              true);
+              "}");
         ASSERT_EQUALS("[test.cpp:7]: (warning) fscanf format string has 0 parameters but 1 are given\n", errout.str());
+    }
+
+    void testScanf4() {
+        check("void f() {\n"
+              "    char c;\n"
+              "    scanf(\"%c\", &c);\n"
+              "}");
+        ASSERT_EQUALS("", errout.str());
     }
 
     void testScanfArgument() {
@@ -2059,10 +2091,9 @@ private:
               "    sscanf(bar, \"%1d\", &foo);\n"
               "    scanf(\"%1u%1u\", &foo, bar());\n"
               "    scanf(\"%*1x %1x %29s\", &count, KeyName);\n" // #3373
-              "}\n",
-              "test.cpp",
-              true
-             );
+              "    fscanf(f, \"%7ms\", &ref);\n" // #3461
+              "    sscanf(ip_port, \"%*[^:]:%d\", &port);\n" // #3468
+              "}");
         ASSERT_EQUALS("", errout.str());
 
         check("void foo() {\n"
@@ -2070,10 +2101,7 @@ private:
               "    scanf(\"%1d\", &foo, &bar);\n"
               "    fscanf(bar, \"%1d\", &foo, &bar);\n"
               "    scanf(\"%*1x %1x %29s\", &count, KeyName, foo);\n"
-              "}\n",
-              "test.cpp",
-              true
-             );
+              "}");
         ASSERT_EQUALS("[test.cpp:2]: (warning) scanf format string has 0 parameters but 1 are given\n"
                       "[test.cpp:3]: (warning) scanf format string has 1 parameters but 2 are given\n"
                       "[test.cpp:4]: (warning) fscanf format string has 1 parameters but 2 are given\n"
@@ -2084,10 +2112,7 @@ private:
               "    scanf(\"%1u%1u\", bar());\n"
               "    sscanf(bar, \"%1d%1d\", &foo);\n"
               "    scanf(\"%*1x %1x %29s\", &count);\n"
-              "}\n",
-              "test.cpp",
-              true
-             );
+              "}");
         ASSERT_EQUALS("[test.cpp:2]: (error) scanf format string has 1 parameters but only 0 are given\n"
                       "[test.cpp:3]: (error) scanf format string has 2 parameters but only 1 are given\n"
                       "[test.cpp:4]: (error) sscanf format string has 2 parameters but only 1 are given\n"
@@ -2197,6 +2222,7 @@ private:
               "    printf(\"%G\", bp);\n"
               "    printf(\"%f\", d);\n"
               "    printf(\"%f\", b);\n"
+              "    printf(\"%f\", (float)cpi);\n"
               "}");
         ASSERT_EQUALS("[test.cpp:3]: (warning) %e in format string (no. 1) requires a floating point number given in the argument list\n"
                       "[test.cpp:4]: (warning) %E in format string (no. 1) requires a floating point number given in the argument list\n"
@@ -4138,14 +4164,14 @@ private:
             "  for(unsigned char i = 10; i >= 0; i--)"
             "    printf(\"%u\", i);\n"
             "}");
-        ASSERT_EQUALS("[test.cpp:2]: (style) Checking if unsigned variable 'i' is positive is always true.\n", errout.str());
+        ASSERT_EQUALS("[test.cpp:2]: (style) An unsigned variable 'i' can't be negative so it is unnecessary to test it.\n", errout.str());
 
         check_signOfUnsignedVariable(
             "void foo(bool b) {\n"
             "  for(unsigned int i = 10; b || i >= 0; i--)"
             "    printf(\"%u\", i);\n"
             "}");
-        ASSERT_EQUALS("[test.cpp:2]: (style) Checking if unsigned variable 'i' is positive is always true.\n", errout.str());
+        ASSERT_EQUALS("[test.cpp:2]: (style) An unsigned variable 'i' can't be negative so it is unnecessary to test it.\n", errout.str());
 
         check_signOfUnsignedVariable(
             "bool foo(unsigned int x) {\n"
@@ -4185,7 +4211,7 @@ private:
             "    return true;\n"
             "  return false;\n"
             "}");
-        ASSERT_EQUALS("[test.cpp:2]: (style) Checking if unsigned variable 'x' is positive is always true.\n", errout.str());
+        ASSERT_EQUALS("[test.cpp:2]: (style) An unsigned variable 'x' can't be negative so it is unnecessary to test it.\n", errout.str());
 
         check_signOfUnsignedVariable(
             "bool foo(int x) {\n"
@@ -4234,7 +4260,7 @@ private:
             "    return true;\n"
             "  return false;\n"
             "}");
-        ASSERT_EQUALS("[test.cpp:2]: (style) Checking if unsigned variable 'x' is positive is always true.\n", errout.str());
+        ASSERT_EQUALS("[test.cpp:2]: (style) An unsigned variable 'x' can't be negative so it is unnecessary to test it.\n", errout.str());
 
         check_signOfUnsignedVariable(
             "bool foo(int x, bool y) {\n"
@@ -4283,7 +4309,7 @@ private:
             "    return true;\n"
             "  return false;\n"
             "}");
-        ASSERT_EQUALS("[test.cpp:2]: (style) Checking if unsigned variable 'x' is positive is always true.\n", errout.str());
+        ASSERT_EQUALS("[test.cpp:2]: (style) An unsigned variable 'x' can't be negative so it is unnecessary to test it.\n", errout.str());
 
         check_signOfUnsignedVariable(
             "bool foo(int x, bool y) {\n"
@@ -4332,7 +4358,7 @@ private:
             "    return true;\n"
             "  return false;\n"
             "}");
-        ASSERT_EQUALS("[test.cpp:2]: (style) Checking if unsigned variable 'x' is positive is always true.\n", errout.str());
+        ASSERT_EQUALS("[test.cpp:2]: (style) An unsigned variable 'x' can't be negative so it is unnecessary to test it.\n", errout.str());
 
         check_signOfUnsignedVariable(
             "bool foo(int x, bool y) {\n"
@@ -4434,6 +4460,225 @@ private:
             "  }\n"
             "}");
         ASSERT_EQUALS("", errout.str());
+    }
+
+    void checkDoubleFree() {
+        check(
+            "void foo(char *p) {\n"
+            "  free(p);\n"
+            "  free(p);\n"
+            "}");
+        ASSERT_EQUALS("[test.cpp:3]: (error) Memory pointed to by 'p' is freed twice.\n", errout.str());
+
+        check(
+            "void foo(char *p, char *r) {\n"
+            "  free(p);\n"
+            "  free(r);\n"
+            "}");
+        ASSERT_EQUALS("", errout.str());
+
+        check(
+            "void foo() {\n"
+            "  free(p);\n"
+            "  free(r);\n"
+            "}");
+        ASSERT_EQUALS("", errout.str());
+
+        check(
+            "void foo(char *p) {\n"
+            "  if (x < 3) free(p);\n"
+            "  else if (x > 9) free(p);\n"
+            "}");
+        ASSERT_EQUALS("", errout.str());
+
+        check(
+            "void foo(char *p) {\n"
+            "  free(p);\n"
+            "  getNext(&p);\n"
+            "  free(p);\n"
+            "}");
+        ASSERT_EQUALS("", errout.str());
+
+        check(
+            "void foo(char *p) {\n"
+            "  free(p);\n"
+            "  bar();\n"
+            "  free(p);\n"
+            "}");
+        ASSERT_EQUALS("[test.cpp:4]: (error) Memory pointed to by 'p' is freed twice.\n", errout.str());
+
+        check(
+            "void foo(char *p) {\n"
+            "  free(p);\n"
+            "  printf(\"Freed memory at location %x\", (unsigned int) p);\n"
+            "  free(p);\n"
+            "}");
+        ASSERT_EQUALS("[test.cpp:4]: (error) Memory pointed to by 'p' is freed twice.\n", errout.str());
+
+        check(
+            "void foo(DIR *p) {\n"
+            "  closedir(p);\n"
+            "  closedir(p);\n"
+            "}");
+        ASSERT_EQUALS("[test.cpp:3]: (error) Directory handle 'p' closed twice.\n", errout.str());
+
+        check(
+            "void foo(DIR *p, DIR *r) {\n"
+            "  closedir(p);\n"
+            "  closedir(r);\n"
+            "}");
+        ASSERT_EQUALS("", errout.str());
+
+        check(
+            "void foo(DIR *p) {\n"
+            "  if (x < 3) closedir(p);\n"
+            "  else if (x > 9) closedir(p);\n"
+            "}");
+        ASSERT_EQUALS("", errout.str());
+
+        check(
+            "void foo(DIR *p) {\n"
+            "  closedir(p);\n"
+            "  gethandle(&p);\n"
+            "  closedir(p);\n"
+            "}");
+        ASSERT_EQUALS("", errout.str());
+
+        check(
+            "void foo(DIR *p) {\n"
+            "  closedir(p);\n"
+            "  gethandle();\n"
+            "  closedir(p);\n"
+            "}");
+        ASSERT_EQUALS("[test.cpp:4]: (error) Directory handle 'p' closed twice.\n", errout.str());
+
+        check(
+            "void foo(Data* p) {\n"
+            "  free(p->a);\n"
+            "  free(p->b);\n"
+            "}");
+        ASSERT_EQUALS("", errout.str());
+
+        check(
+            "void f() {\n"
+            "    char *p = malloc(100);\n"
+            "    if (x) {\n"
+            "        free(p);\n"
+            "        bailout();\n"
+            "    }\n"
+            "    free(p);\n"
+            "}");
+        ASSERT_EQUALS("", errout.str());
+
+        check(
+            "void f() {\n"
+            "    char *p = malloc(100);\n"
+            "    if (x) {\n"
+            "        free(p);\n"
+            "		 x = 0;\n"
+            "    }\n"
+            "    free(p);\n"
+            "}");
+        ASSERT_EQUALS("[test.cpp:7]: (error) Memory pointed to by 'p' is freed twice.\n", errout.str());
+
+        check(
+            "void f() {\n"
+            "    char *p = do_something();\n"
+            "    free(p);\n"
+            "    p = do_something();\n"
+            "    free(p);\n"
+            "}");
+        ASSERT_EQUALS("", errout.str());
+
+        check(
+            "void foo(char *p) {\n"
+            "  g_free(p);\n"
+            "  g_free(p);\n"
+            "}");
+        ASSERT_EQUALS("[test.cpp:3]: (error) Memory pointed to by 'p' is freed twice.\n", errout.str());
+
+        check(
+            "void foo(char *p, char *r) {\n"
+            "  g_free(p);\n"
+            "  g_free(r);\n"
+            "}");
+        ASSERT_EQUALS("", errout.str());
+
+        check(
+            "void foo(char *p) {\n"
+            "  g_free(p);\n"
+            "  getNext(&p);\n"
+            "  g_free(p);\n"
+            "}");
+        ASSERT_EQUALS("", errout.str());
+
+        check(
+            "void foo(char *p) {\n"
+            "  g_free(p);\n"
+            "  bar();\n"
+            "  g_free(p);\n"
+            "}");
+        ASSERT_EQUALS("[test.cpp:4]: (error) Memory pointed to by 'p' is freed twice.\n", errout.str());
+
+        check(
+            "void foo(char *p) {\n"
+            "  delete p;\n"
+            "  delete p;\n"
+            "}");
+        ASSERT_EQUALS("[test.cpp:3]: (error) Memory pointed to by 'p' is freed twice.\n", errout.str());
+
+        check(
+            "void foo(char *p, char *r) {\n"
+            "  delete p;\n"
+            "  delete r;\n"
+            "}");
+        ASSERT_EQUALS("", errout.str());
+
+        check(
+            "void foo(char *p) {\n"
+            "  delete p;\n"
+            "  getNext(&p);\n"
+            "  delete p;\n"
+            "}");
+        ASSERT_EQUALS("", errout.str());
+
+        check(
+            "void foo(char *p) {\n"
+            "  delete p;\n"
+            "  bar();\n"
+            "  delete p;\n"
+            "}");
+        ASSERT_EQUALS("[test.cpp:4]: (error) Memory pointed to by 'p' is freed twice.\n", errout.str());
+
+        check(
+            "void foo(char *p) {\n"
+            "  delete[] p;\n"
+            "  delete[] p;\n"
+            "}");
+        ASSERT_EQUALS("[test.cpp:3]: (error) Memory pointed to by 'p' is freed twice.\n", errout.str());
+
+        check(
+            "void foo(char *p, char *r) {\n"
+            "  delete[] p;\n"
+            "  delete[] r;\n"
+            "}");
+        ASSERT_EQUALS("", errout.str());
+
+        check(
+            "void foo(char *p) {\n"
+            "  delete[] p;\n"
+            "  getNext(&p);\n"
+            "  delete[] p;\n"
+            "}");
+        ASSERT_EQUALS("", errout.str());
+
+        check(
+            "void foo(char *p) {\n"
+            "  delete[] p;\n"
+            "  bar();\n"
+            "  delete[] p;\n"
+            "}");
+        ASSERT_EQUALS("[test.cpp:4]: (error) Memory pointed to by 'p' is freed twice.\n", errout.str());
     }
 
     void coutCerrMisusage() {

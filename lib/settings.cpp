@@ -1,6 +1,6 @@
 /*
  * Cppcheck - A tool for static C/C++ code analysis
- * Copyright (C) 2007-2011 Daniel Marjamäki and Cppcheck team.
+ * Copyright (C) 2007-2012 Daniel Marjamäki and Cppcheck team.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -79,16 +79,18 @@ std::string Settings::addEnabled(const std::string &str)
 
     bool handled = false;
 
-    std::set<std::string> id;
-    id.insert("style");
-    id.insert("performance");
-    id.insert("portability");
-    id.insert("information");
-    id.insert("missingInclude");
-    id.insert("unusedFunction");
+    static std::set<std::string> id;
+    if (id.empty()) {
+        id.insert("style");
+        id.insert("performance");
+        id.insert("portability");
+        id.insert("information");
+        id.insert("missingInclude");
+        id.insert("unusedFunction");
 #ifndef NDEBUG
-    id.insert("internal");
+        id.insert("internal");
 #endif
+    }
 
     if (str == "all") {
         std::set<std::string>::const_iterator it;

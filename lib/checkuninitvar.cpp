@@ -1,6 +1,6 @@
 /*
  * Cppcheck - A tool for static C/C++ code analysis
- * Copyright (C) 2007-2011 Daniel Marjamäki and Cppcheck team.
+ * Copyright (C) 2007-2012 Daniel Marjamäki and Cppcheck team.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -474,7 +474,13 @@ private:
         if (tok.varId()) {
             // array variable passed as function parameter..
             if (Token::Match(tok.previous(), "[(,] %var% [+-,)]")) {
-                if (Token::Match(tok.previous(), "( %var% ) ="))
+                // skip ')'..
+                const Token *tok2 = tok.next();
+                while (tok2 && tok2->str() == ")")
+                    tok2 = tok2->next();
+
+                // variable is assigned like: "( %var% ) .. ="
+                if (Token::Match(tok.previous(), "( %var% )") && tok2 && tok2->str() == "=")
                     ExecutionPath::bailOutVar(checks, tok.varId());
                 else
                     use(checks, &tok);
@@ -830,15 +836,7 @@ private:
                 // Check that the variable hasn't been initialized and
                 // that it isn't initialized in the body..
                 if (varid1.find(varid) == varid1.end()) {
-                    unsigned int indentlevel = 0;
-                    for (const Token *tok3 = tok2->tokAt(5); tok3; tok3 = tok3->next()) {
-                        if (tok3->str() == "{")
-                            ++indentlevel;
-                        else if (tok3->str() == "}") {
-                            if (indentlevel == 0)
-                                break;
-                            --indentlevel;
-                        }
+                    for (const Token *tok3 = tok2->tokAt(5); tok3 && tok3 != tok2->linkAt(4); tok3 = tok3->next()) {
                         if (tok3->varId() == varid) {
                             varid = 0;  // variable is used.. maybe it's initialized. clear the variable id.
                             break;
@@ -1120,33 +1118,37 @@ bool CheckUninitVar::checkScopeForVariable(const Token *tok, const unsigned int 
             // goto the {
             tok = tok->next()->link()->next();
 
-            bool possibleInitIf(number_of_if > 0 || suppressErrors);
-            const bool initif = checkScopeForVariable(tok->next(), varid, ispointer, &possibleInitIf);
-
-            // goto the }
-            tok = tok->link();
-
-            if (!Token::simpleMatch(tok, "} else {")) {
-                if (initif || possibleInitIf) {
-                    ++number_of_if;
-                    if (number_of_if >= 2)
-                        return true;
-                }
-            } else {
-                // goto the {
-                tok = tok->tokAt(2);
-
-                bool possibleInitElse(number_of_if > 0 || suppressErrors);
-                const bool initelse = checkScopeForVariable(tok->next(), varid, ispointer, &possibleInitElse);
+            if (!tok)
+                break;
+            if (tok->str() == "{") {
+                bool possibleInitIf(number_of_if > 0 || suppressErrors);
+                const bool initif = checkScopeForVariable(tok->next(), varid, ispointer, &possibleInitIf);
 
                 // goto the }
                 tok = tok->link();
 
-                if (initif && initelse)
-                    return true;
+                if (!Token::simpleMatch(tok, "} else {")) {
+                    if (initif || possibleInitIf) {
+                        ++number_of_if;
+                        if (number_of_if >= 2)
+                            return true;
+                    }
+                } else {
+                    // goto the {
+                    tok = tok->tokAt(2);
 
-                if (initif || initelse || possibleInitElse)
-                    ++number_of_if;
+                    bool possibleInitElse(number_of_if > 0 || suppressErrors);
+                    const bool initelse = checkScopeForVariable(tok->next(), varid, ispointer, &possibleInitElse);
+
+                    // goto the }
+                    tok = tok->link();
+
+                    if (initif && initelse)
+                        return true;
+
+                    if (initif || initelse || possibleInitElse)
+                        ++number_of_if;
+                }
             }
         }
 
@@ -1177,16 +1179,18 @@ bool CheckUninitVar::checkScopeForVariable(const Token *tok, const unsigned int 
             // goto the {
             const Token *tok2 = tok->next()->link()->next();
 
-            bool possibleinit = true;
-            bool init = checkScopeForVariable(tok2->next(), varid, ispointer, &possibleinit);
+            if (tok2 && tok2->str() == "{") {
+                bool possibleinit = true;
+                bool init = checkScopeForVariable(tok2->next(), varid, ispointer, &possibleinit);
 
-            // variable is initialized in the loop..
-            if (possibleinit || init)
-                return true;
+                // variable is initialized in the loop..
+                if (possibleinit || init)
+                    return true;
 
-            // is variable used in for-head?
-            if (!suppressErrors) {
-                checkIfForWhileHead(tok->next(), varid, ispointer, false, bool(number_of_if == 0));
+                // is variable used in for-head?
+                if (!suppressErrors) {
+                    checkIfForWhileHead(tok->next(), varid, ispointer, false, bool(number_of_if == 0));
+                }
             }
         }
 
@@ -1206,7 +1210,7 @@ bool CheckUninitVar::checkScopeForVariable(const Token *tok, const unsigned int 
             return true;
 
         // variable is seen..
-        if (tok->varId() == varid) {
+        if (tok && tok->varId() == varid) {
             // Use variable
             if (!suppressErrors && isVariableUsage(tok, ispointer))
                 uninitvarError(tok, tok->str());
@@ -1252,7 +1256,7 @@ bool CheckUninitVar::isVariableUsage(const Token *vartok, bool pointer) const
             return false;
         }
 
-        if (vartok->previous()->str() != "&" || !Token::Match(vartok->tokAt(-2), "[(,=]")) {
+        if (vartok->previous()->str() != "&" || !Token::Match(vartok->tokAt(-2), "[(,=?:]")) {
             return true;
         }
     }

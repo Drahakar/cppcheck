@@ -1,6 +1,6 @@
 /*
  * Cppcheck - A tool for static C/C++ code analysis
- * Copyright (C) 2007-2011 Daniel Marjamäki and Cppcheck team.
+ * Copyright (C) 2007-2012 Daniel Marjamäki and Cppcheck team.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -140,7 +140,7 @@ void CheckStl::iterators()
             // taking the result of an erase is ok
             else if (Token::Match(tok2, "%varid% = %var% . erase (", iteratorId)) {
                 // the returned iterator is valid
-                validatingToken = tok2->tokAt(5)->link();
+                validatingToken = tok2->linkAt(5);
                 tok2 = tok2->tokAt(5);
             }
 
@@ -265,35 +265,16 @@ void CheckStl::stlOutOfBounds()
             continue;
 
         // check if the for loop condition is wrong
-        unsigned int indent = 0;
-        for (const Token *tok2 = tok->tokAt(2); tok2; tok2 = tok2->next()) {
-            if (tok2->str() == "(")
-                ++indent;
-
-            else if (tok2->str() == ")") {
-                if (indent == 0)
-                    break;
-                --indent;
-            }
-
+        for (const Token *tok2 = tok->tokAt(2); tok2 && tok2 != tok->next()->link(); tok2 = tok2->next()) {
             if (Token::Match(tok2, "; %var% <= %var% . size ( ) ;")) {
-                // Count { and } for tok3
-                unsigned int indent3 = 0;
-
                 // variable id for loop variable.
                 unsigned int numId = tok2->next()->varId();
 
                 // variable id for the container variable
                 unsigned int varId = tok2->tokAt(3)->varId();
 
-                for (const Token *tok3 = tok2->tokAt(8); tok3; tok3 = tok3->next()) {
-                    if (tok3->str() == "{")
-                        ++indent3;
-                    else if (tok3->str() == "}") {
-                        if (indent3 <= 1)
-                            break;
-                        --indent3;
-                    } else if (tok3->varId() == varId) {
+                for (const Token *tok3 = tok2->tokAt(8); tok3 && tok3 != i->classEnd; tok3 = tok3->next()) {
+                    if (tok3->varId() == varId) {
                         if (Token::simpleMatch(tok3->next(), ". size ( )"))
                             break;
                         else if (Token::Match(tok3->next(), "[ %varid% ]", numId))
@@ -741,35 +722,99 @@ void CheckStl::if_find()
 
         const Token* tok = i->classDef;
 
-        if (Token::Match(tok, "if ( !| %var% . find ( %any% ) )")) {
+        if (Token::Match(tok, "if ( !| %var% . find (")) {
             // goto %var%
             tok = tok->tokAt(2);
-            if (!tok->isName())
+            if (tok->str() == "!")
+                tok = tok->next();
+            if (!Token::simpleMatch(tok->linkAt(3), ") )"))
+                continue;
+
+            const unsigned int varid = tok->varId();
+            const Variable *var = symbolDatabase->getVariableFromVarId(varid);
+            if (var) {
+                // Is the variable a std::string or STL container?
+                const Token * decl = var->typeStartToken();
+
+                if (decl->str() == "const")
+                    decl = decl->next();
+                // stl container
+                if (Token::Match(decl, "std :: %var% < %type% > &| %varid%", varid))
+                    if_findError(tok, false);
+                else if (Token::Match(decl, "std :: string &| %varid%", varid))
+                    if_findError(tok, true);
+            }
+        }
+
+        //check also for vector-like or pointer containers
+        else if (Token::Match(tok, "if ( !| * %var%") || Token::Match(tok, "if ( !| %var% [")) {
+            tok = tok->tokAt(2);
+
+            const Token *tok2 = tok;
+            if (tok2->str() == "!")
+                tok2 = tok2->next();
+            tok2 = tok2->next();
+            if (tok2->str() == "[")
+                tok2 = tok2->link();
+            tok2 = tok2->next();
+
+            if (!Token::simpleMatch(tok2, ". find ("))
+                continue;
+            if (!Token::simpleMatch(tok2->linkAt(2), ") )"))
+                continue;
+
+            // goto %var%
+            if (tok->str() == "!")
+                tok = tok->next();
+            if (tok->str() == "*")
                 tok = tok->next();
 
             const unsigned int varid = tok->varId();
             const Variable *var = symbolDatabase->getVariableFromVarId(varid);
             if (var) {
                 // Is the variable a std::string or STL container?
-                const Token * decl = var->nameToken();
-                while (decl && !Token::Match(decl, "[;{}(,]"))
-                    decl = decl->previous();
+                const Token * decl = var->typeStartToken();
 
-                if (decl)
+                //jump next to 'const'
+                if (decl->str() == "const")
                     decl = decl->next();
+                //pretty bad limitation.. but it is there in order to avoid
+                //own implementations of 'find' or any container
+                if (!Token::simpleMatch(decl, "std ::"))
+                    continue;
 
-                // stl container
-                if (Token::Match(decl, "const| std :: %var% < %type% > &|*| %varid%", varid))
-                    if_findError(tok, false);
-                else if (Token::Match(decl, "const| std :: string &|*| %varid%", varid))
-                    if_findError(tok, true);
+                decl = decl->tokAt(2);
+
+                if (Token::Match(decl, "%var% <")) {
+                    decl = decl->tokAt(2);
+                    //stl-like
+                    if (Token::Match(decl, "std :: %var% < %type% >| >>|> &| %varid%", varid))
+                        if_findError(tok, false);
+                    //not stl-like, then let's hope it's a pointer or an array
+                    else if (Token::Match(decl, "%type% >")) {
+                        decl = decl->tokAt(2);
+                        if (Token::Match(decl, "* &| %varid%", varid) ||
+                            Token::Match(decl, "&| %varid% [ ]| %any% ]| ", varid))
+                            if_findError(tok, false);
+                    }
+
+                    else if (Token::Match(decl, "std :: string > &| %varid%", varid))
+                        if_findError(tok, true);
+                }
+
+                else if (decl && decl->str() == "string") {
+                    decl = decl->next();
+                    if (Token::Match(decl, "* &| %varid%", varid) ||
+                        Token::Match(decl, "&| %varid% [ ]| %any% ]| ", varid))
+                        if_findError(tok, true);
+                }
             }
         }
 
         else if (Token::Match(tok, "if ( !| std :: find|find_if (")) {
             // goto '(' for the find
             tok = tok->tokAt(4);
-            if (tok->isName())
+            if (tok->str() != "(")
                 tok = tok->next();
 
             // check that result is checked properly

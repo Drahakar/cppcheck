@@ -1,6 +1,6 @@
 /*
  * Cppcheck - A tool for static C/C++ code analysis
- * Copyright (C) 2007-2011 Daniel Marjamäki and Cppcheck team.
+ * Copyright (C) 2007-2012 Daniel Marjamäki and Cppcheck team.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -49,6 +49,7 @@ private:
         TEST_CASE(combine_strings);
         TEST_CASE(double_plus);
         TEST_CASE(redundant_plus);
+        TEST_CASE(redundant_plus_numbers);
         TEST_CASE(parentheses1);
         TEST_CASE(parenthesesVar);      // Remove redundant parentheses around variable .. "( %var% )"
         TEST_CASE(declareVar);
@@ -119,6 +120,7 @@ private:
         TEST_CASE(template26);  // #2721 - passing 'char[2]' as template parameter
         TEST_CASE(template27);  // #3350 - removing unused template in macro call
         TEST_CASE(template28);
+        TEST_CASE(template29);  // #3449
         TEST_CASE(template_unhandled);
         TEST_CASE(template_default_parameter);
         TEST_CASE(template_default_type);
@@ -168,11 +170,10 @@ private:
         TEST_CASE(strcat1);
         TEST_CASE(strcat2);
 
-        // Syntax error
-        TEST_CASE(argumentsWithSameName)
-
         TEST_CASE(simplifyAtol)
+
         TEST_CASE(simplifyHexInString)
+
         TEST_CASE(simplifyTypedef1)
         TEST_CASE(simplifyTypedef2)
         TEST_CASE(simplifyTypedef3)
@@ -445,7 +446,7 @@ private:
 
 
     void cast() {
-        ASSERT_EQUALS("if ( ! p )", tok("if (p == (char *)0)"));
+        ASSERT_EQUALS("if ( ! p ) { ; }", tok("if (p == (char *)0);"));
         ASSERT_EQUALS("return str ;", tok("return (char *)str;"));
 
         {
@@ -467,7 +468,7 @@ private:
         ASSERT_EQUALS("if ( * a )", tok("if ((unsigned int)(unsigned char)*a)"));
         ASSERT_EQUALS("class A { A operator* ( int ) ; } ;", tok("class A { A operator *(int); };"));
         ASSERT_EQUALS("class A { A operator* ( int ) const ; } ;", tok("class A { A operator *(int) const; };"));
-        ASSERT_EQUALS("if ( ! p )", tok("if (p == (char *)(char *)0)"));
+        ASSERT_EQUALS("if ( ! p ) { ; }", tok("if (p == (char *)(char *)0);"));
 
         // no simplification as the cast may be important here. see #2897 for example
         ASSERT_EQUALS("; * ( ( char * ) p + 1 ) = 0 ;", tok("; *((char *)p + 1) = 0;"));
@@ -693,6 +694,58 @@ private:
                                   "a=a - - - b;\n"
                                   "}\n";
             ASSERT_EQUALS("void foo ( int a , int b ) { a = a - b ; }", tok(code1));
+        }
+    }
+
+    void redundant_plus_numbers() {
+        {
+            const char code1[] =  "void foo( int a )\n"
+                                  "{\n"
+                                  "a=a + + 1;\n"
+                                  "}\n";
+            ASSERT_EQUALS("void foo ( int a ) { a = a + 1 ; }", tok(code1));
+        }
+        {
+            const char code1[] =  "void foo( int a )\n"
+                                  "{\n"
+                                  "a=a + + + 1;\n"
+                                  "}\n";
+            ASSERT_EQUALS("void foo ( int a ) { a = a + 1 ; }", tok(code1));
+        }
+        {
+            const char code1[] =  "void foo( int a )\n"
+                                  "{\n"
+                                  "a=a + - 1;\n"
+                                  "}\n";
+            ASSERT_EQUALS("void foo ( int a ) { a = a - 1 ; }", tok(code1));
+        }
+        {
+            const char code1[] =  "void foo( int a )\n"
+                                  "{\n"
+                                  "a=a - + 1;\n"
+                                  "}\n";
+            ASSERT_EQUALS("void foo ( int a ) { a = a - 1 ; }", tok(code1));
+        }
+        {
+            const char code1[] =  "void foo( int a )\n"
+                                  "{\n"
+                                  "a=a - - 1;\n"
+                                  "}\n";
+            ASSERT_EQUALS("void foo ( int a ) { a = a + 1 ; }", tok(code1));
+        }
+        {
+            const char code1[] =  "void foo( int a )\n"
+                                  "{\n"
+                                  "a=a - + - 1;\n"
+                                  "}\n";
+            ASSERT_EQUALS("void foo ( int a ) { a = a + 1 ; }", tok(code1));
+        }
+        {
+            const char code1[] =  "void foo( int a )\n"
+                                  "{\n"
+                                  "a=a - - - 1;\n"
+                                  "}\n";
+            ASSERT_EQUALS("void foo ( int a ) { a = a - 1 ; }", tok(code1));
         }
     }
 
@@ -2086,6 +2139,14 @@ private:
         ASSERT_EQUALS("Fred<int,Fred<int,int>> x ; class Fred<int,int> { } class Fred<int,Fred<int,int>> { }", sizeof_(code));
     }
 
+    void template29() {
+        // #3449 - garbage code (don't segfault)
+        const char code[] = "template<typename T> struct A;\n"
+                            "struct B { template<typename T> struct C };\n"
+                            "{};";
+        ASSERT_EQUALS("struct B { } ; { } ;", sizeof_(code));
+    }
+
     void template_unhandled() {
         // An unhandled template usage should be simplified..
         ASSERT_EQUALS("x<int> ( ) ;", sizeof_("x<int>();"));
@@ -2347,7 +2408,6 @@ private:
 
     void whileAssign2() {
         // #1909 - Internal error
-        errout.str("");
         tok("void f()\n"
             "{\n"
             "  int b;\n"
@@ -2377,17 +2437,17 @@ private:
     }
 
     void ifnot() {
-        ASSERT_EQUALS("if ( ! x )", simplifyIfNot("if(0==x)"));
-        ASSERT_EQUALS("if ( ! x )", simplifyIfNot("if(x==0)"));
-        ASSERT_EQUALS("if ( ! ( a = b ) )", simplifyIfNot("if(0==(a=b))"));
-        ASSERT_EQUALS("if ( ! x )", simplifyIfNot("if(x==0)"));
-        ASSERT_EQUALS("if ( ! a && b ( ) )", simplifyIfNot("if( 0 == a && b() )"));
-        ASSERT_EQUALS("if ( b ( ) && ! a )", simplifyIfNot("if( b() && 0 == a )"));
-        ASSERT_EQUALS("if ( ! ( a = b ) )", simplifyIfNot("if((a=b)==0)"));
-        ASSERT_EQUALS("if ( ! x . y )", simplifyIfNot("if(x.y==0)"));
-        ASSERT_EQUALS("if ( ! x )", simplifyIfNot("if((x==0))"));
-        ASSERT_EQUALS("if ( ( ! x ) && ! y )", simplifyIfNot("if((x==0) && y==0)"));
-        ASSERT_EQUALS("if ( ! ( ! fclose ( fd ) ) )", simplifyIfNot("if(!(fclose(fd) == 0))"));
+        ASSERT_EQUALS("if ( ! x ) { ; }", simplifyIfNot("if(0==x);"));
+        ASSERT_EQUALS("if ( ! x ) { ; }", simplifyIfNot("if(x==0);"));
+        ASSERT_EQUALS("if ( ! ( a = b ) ) { ; }", simplifyIfNot("if(0==(a=b));"));
+        ASSERT_EQUALS("if ( ! x ) { ; }", simplifyIfNot("if(x==0);"));
+        ASSERT_EQUALS("if ( ! a && b ( ) ) { ; }", simplifyIfNot("if( 0 == a && b() );"));
+        ASSERT_EQUALS("if ( b ( ) && ! a ) { ; }", simplifyIfNot("if( b() && 0 == a );"));
+        ASSERT_EQUALS("if ( ! ( a = b ) ) { ; }", simplifyIfNot("if((a=b)==0);"));
+        ASSERT_EQUALS("if ( ! x . y ) { ; }", simplifyIfNot("if(x.y==0);"));
+        ASSERT_EQUALS("if ( ! x ) { ; }", simplifyIfNot("if((x==0));"));
+        ASSERT_EQUALS("if ( ( ! x ) && ! y ) { ; }", simplifyIfNot("if((x==0) && y==0);"));
+        ASSERT_EQUALS("if ( ! ( ! fclose ( fd ) ) ) { ; }", simplifyIfNot("if(!(fclose(fd) == 0));"));
     }
 
 
@@ -2408,8 +2468,8 @@ private:
     }
 
     void not1() {
-        ASSERT_EQUALS("if ( ! p )", simplifyLogicalOperators("if (not p)"));
-        ASSERT_EQUALS("if ( p && ! q )", simplifyLogicalOperators("if (p && not q)"));
+        ASSERT_EQUALS("if ( ! p ) { ; }", simplifyLogicalOperators("if (not p);"));
+        ASSERT_EQUALS("if ( p && ! q ) { ; }", simplifyLogicalOperators("if (p && not q);"));
         ASSERT_EQUALS("void foo ( not i )", simplifyLogicalOperators("void foo ( not i )"));
     }
 
@@ -2426,8 +2486,8 @@ private:
         ASSERT_EQUALS("if ( p && bar ( ) ) { ; }",
                       simplifyLogicalOperators("if (p and bar()) ;"));
 
-        ASSERT_EQUALS("if ( p && ! q )",
-                      simplifyLogicalOperators("if (p and not q)"));
+        ASSERT_EQUALS("if ( p && ! q ) { ; }",
+                      simplifyLogicalOperators("if (p and not q) ;"));
     }
 
     void or1() {
@@ -2443,8 +2503,8 @@ private:
         ASSERT_EQUALS("if ( p || bar ( ) ) { ; }",
                       simplifyLogicalOperators("if (p or bar()) ;"));
 
-        ASSERT_EQUALS("if ( p || ! q )",
-                      simplifyLogicalOperators("if (p or not q)"));
+        ASSERT_EQUALS("if ( p || ! q ) { ; }",
+                      simplifyLogicalOperators("if (p or not q) ;"));
     }
 
     void comma_keyword() {
@@ -2738,9 +2798,9 @@ private:
 
         ASSERT_EQUALS(";", tok("; x = x + 0;"));
 
-        ASSERT_EQUALS("if ( a == 2 )", tok("if (a==1+1)"));
-        ASSERT_EQUALS("if ( a + 2 != 6 )", tok("if (a+1+1!=1+2+3)"));
-        ASSERT_EQUALS("if ( 4 < a )", tok("if (14-2*5<a*4/(2*2))"));
+        ASSERT_EQUALS("if ( a == 2 ) { ; }", tok("if (a==1+1);"));
+        ASSERT_EQUALS("if ( a + 2 != 6 ) { ; }", tok("if (a+1+1!=1+2+3);"));
+        ASSERT_EQUALS("if ( 4 < a ) { ; }", tok("if (14-2*5<a*4/(2*2));"));
 
         ASSERT_EQUALS("( y / 2 - 2 )", tok("(y / 2 - 2)"));
         ASSERT_EQUALS("( y % 2 - 2 )", tok("(y % 2 - 2)"));
@@ -3068,6 +3128,54 @@ private:
                                     "}";
             ASSERT_EQUALS(expected, tok(code));
         }
+
+        {
+            const char code[] = "class A"
+                                "{"
+                                " int a; "
+                                " double b; "
+                                "    A() : b(3.22)"
+                                "    {"
+                                "        goto source ;"
+                                "        bleeh;"
+                                "        source:"
+                                "        a = 322;"
+                                "    }"
+                                "}"
+                                "class A1 : public A"
+                                "{"
+                                " int a1; "
+                                " double b1; "
+                                "    A1() : b1(3.22)"
+                                "    {"
+                                "        goto source1 ;"
+                                "        bleeh1;"
+                                "        source1:"
+                                "        a = 322;"
+                                "    }"
+                                "}";
+            const char expected[] = "class A "
+                                    "{"
+                                    " int a ;"
+                                    " double b ;"
+                                    " A ( ) : b ( 3.22 )"
+                                    " {"
+                                    " a = 322 ;"
+                                    " return ;"
+                                    " } "
+                                    "} "
+                                    "class A1 : public A "
+                                    "{"
+                                    " int a1 ;"
+                                    " double b1 ;"
+                                    " A1 ( ) : b1 ( 3.22 )"
+                                    " {"
+                                    " a = 322 ;"
+                                    " return ;"
+                                    " } "
+                                    "}";
+            ASSERT_EQUALS(expected, tok(code));
+        }
     }
 
     void flowControl() {
@@ -3281,25 +3389,6 @@ private:
                               "strcat ( dst , \" \" ) ;";
 
         ASSERT_EQUALS(expect, tok(code));
-    }
-
-    void argumentsWithSameName() {
-        // This code has syntax error, two variables can not have the same name
-        {
-            const char code[] = "void foo(x, x)\n"
-                                " int x;\n"
-                                " int x;\n"
-                                "{}\n";
-            ASSERT_EQUALS("void foo ( x , x ) int x ; int x ; { }", tok(code));
-        }
-
-        {
-            const char code[] = "void foo(x, y)\n"
-                                " int x;\n"
-                                " int x;\n"
-                                "{}\n";
-            ASSERT_EQUALS("void foo ( int x , y ) int x ; { }", tok(code));
-        }
     }
 
     void simplifyAtol() {

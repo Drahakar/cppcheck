@@ -1,6 +1,6 @@
 /*
  * Cppcheck - A tool for static C/C++ code analysis
- * Copyright (C) 2007-2011 Daniel Marjamäki and Cppcheck team.
+ * Copyright (C) 2007-2012 Daniel Marjamäki and Cppcheck team.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -67,6 +67,7 @@ public:
         checkOther.checkDuplicateExpression();
         checkOther.checkUnreachableCode();
         checkOther.checkSuspiciousSemicolon();
+        checkOther.checkWrongPrintfScanfArguments();
 
         // information checks
         checkOther.checkVariableScope();
@@ -91,7 +92,6 @@ public:
         checkOther.checkCCTypeFunctions();
         checkOther.checkFflushOnInputStream();
         checkOther.invalidScanf();
-        checkOther.checkWrongPrintfScanfArguments();
 
         checkOther.checkCoutCerrMisusage();
         checkOther.checkIncorrectLogicOperator();
@@ -107,6 +107,7 @@ public:
         checkOther.checkAssignBoolToPointer();
         checkOther.checkSignOfUnsignedVariable();
         checkOther.checkBitwiseOnBoolean();
+        checkOther.checkDoubleFree();
     }
 
     /** @brief Clarify calculation for ".. a * b ? .." */
@@ -261,6 +262,9 @@ public:
     /** @brief %Check for suspicious use of semicolon */
     void checkSuspiciousSemicolon();
 
+    /** @brief %Check for double free or double close operations */
+    void checkDoubleFree();
+
     // Error messages..
     void cstyleCastError(const Token *tok);
     void dangerousUsageStrtolError(const Token *tok);
@@ -307,6 +311,8 @@ public:
     void bitwiseOnBooleanError(const Token *tok, const std::string &varname, const std::string &op);
     void comparisonOfBoolExpressionWithIntError(const Token *tok);
     void SuspiciousSemicolonError(const Token *tok);
+    void doubleFreeError(const Token *tok, const std::string &varname);
+    void doubleCloseDirError(const Token *tok, const std::string &varname);
 
     void getErrorMessages(ErrorLogger *errorLogger, const Settings *settings) {
         CheckOther c(0, settings, errorLogger);
@@ -391,6 +397,7 @@ public:
                "* incorrect length arguments for 'substr' and 'strncmp'\n"
                "* invalid usage of output stream. For example: std::cout << std::cout;'\n"
                "* wrong number of arguments given to 'printf' or 'scanf;'\n"
+               "* double free() or double closedir()\n"
 
                // style
                "* C-style pointer cast in cpp file\n"

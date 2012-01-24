@@ -1,6 +1,6 @@
 /*
  * Cppcheck - A tool for static C/C++ code analysis
- * Copyright (C) 2007-2011 Daniel Marjamäki and Cppcheck team.
+ * Copyright (C) 2007-2012 Daniel Marjamäki and Cppcheck team.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -18,10 +18,6 @@
 
 
 //---------------------------------------------------------------------------
-#ifdef _MSC_VER
-#pragma warning(disable: 4503)
-#endif
-
 #include "tokenize.h"
 #include "token.h"
 #include "mathlib.h"
@@ -30,6 +26,7 @@
 #include "check.h"
 #include "path.h"
 #include "symboldatabase.h"
+#include "templatesimplifier.h"
 
 #include <string>
 #include <cstring>
@@ -228,15 +225,17 @@ void Tokenizer::insertTokens(Token *dest, const Token *src, unsigned int n)
 
 //---------------------------------------------------------------------------
 
-Token *Tokenizer::copyTokens(Token *dest, const Token *first, const Token *last)
+Token *Tokenizer::copyTokens(Token *dest, const Token *first, const Token *last, bool one_line)
 {
     std::stack<Token *> links;
     Token *tok2 = dest;
+    unsigned int linenrs = dest->linenr();
+    unsigned int commonFileIndex = dest->fileIndex();
     for (const Token *tok = first; tok != last->next(); tok = tok->next()) {
         tok2->insertToken(tok->str());
         tok2 = tok2->next();
-        tok2->fileIndex(dest->fileIndex());
-        tok2->linenr(dest->linenr());
+        tok2->fileIndex(commonFileIndex);
+        tok2->linenr(linenrs);
         tok2->isName(tok->isName());
         tok2->isNumber(tok->isNumber());
         tok2->isBoolean(tok->isBoolean());
@@ -259,6 +258,8 @@ Token *Tokenizer::copyTokens(Token *dest, const Token *first, const Token *last)
 
             links.pop();
         }
+        if (!one_line && tok->next())
+            linenrs += tok->next()->linenr() - tok->linenr();
     }
     return tok2;
 }
@@ -278,12 +279,12 @@ void Tokenizer::createTokens(std::istream &code)
     // lineNumbers holds line numbers for files in fileIndexes
     // every time an include file is completely parsed, last item in the vector
     // is removed and lineno is set to point to that value.
-    std::vector<unsigned int> lineNumbers;
+    std::stack<unsigned int> lineNumbers;
 
     // fileIndexes holds index for _files vector about currently parsed files
     // every time an include file is completely parsed, last item in the vector
     // is removed and FileIndex is set to point to that value.
-    std::vector<unsigned int> fileIndexes;
+    std::stack<unsigned int> fileIndexes;
 
     // FileIndex. What file in the _files vector is read now?
     unsigned int FileIndex = 0;
@@ -303,7 +304,7 @@ void Tokenizer::createTokens(std::istream &code)
 
         // char/string..
         // multiline strings are not handled. The preprocessor should handle that for us.
-        if (ch == '\'' || ch == '\"') {
+        else if (ch == '\'' || ch == '\"') {
             std::string line;
 
             // read char
@@ -332,7 +333,7 @@ void Tokenizer::createTokens(std::istream &code)
                 // Has this file been tokenized already?
                 ++lineno;
                 bool foundOurfile = false;
-                fileIndexes.push_back(FileIndex);
+                fileIndexes.push(FileIndex);
                 for (unsigned int i = 0; i < _files.size(); ++i) {
                     if (Path::sameFileName(_files[i], line)) {
                         // Use this index
@@ -347,7 +348,7 @@ void Tokenizer::createTokens(std::istream &code)
                     FileIndex = static_cast<unsigned int>(_files.size() - 1);
                 }
 
-                lineNumbers.push_back(lineno);
+                lineNumbers.push(lineno);
                 lineno = 0;
             } else {
                 // Add previous token
@@ -366,88 +367,86 @@ void Tokenizer::createTokens(std::istream &code)
             continue;
         }
 
-        if (strchr("+-*/%&|^?!=<>[](){};:,.~\n ", ch)) {
-            if (ch == '.' &&
-                CurrentToken.length() > 0 &&
-                std::isdigit(CurrentToken[0])) {
-                // Don't separate doubles "5.4"
-            } else if (strchr("+-", ch) &&
-                       CurrentToken.length() > 0 &&
-                       std::isdigit(CurrentToken[0]) &&
-                       CurrentToken.compare(0,2,"0x") != 0 &&
-                       (CurrentToken[CurrentToken.length()-1] == 'e' ||
-                        CurrentToken[CurrentToken.length()-1] == 'E')) {
-                // Don't separate doubles "4.2e+10"
-            } else if (CurrentToken.empty() && ch == '.' && std::isdigit(code.peek())) {
-                // tokenize .125 into 0.125
-                CurrentToken = "0";
-            } else if (ch=='&' && code.peek() == '&') {
-                if (!CurrentToken.empty()) {
-                    addtoken(CurrentToken.c_str(), lineno, FileIndex, true);
-                    if (!CurrentToken.empty())
-                        _tokensBack->setExpandedMacro(expandedMacro);
-                    CurrentToken.clear();
-                }
-
-                // &&
-                ch = (char)code.get();
-                addtoken("&&", lineno, FileIndex, true);
-                _tokensBack->setExpandedMacro(expandedMacro);
-                continue;
-            } else if (ch==':' && CurrentToken.empty() && code.peek() == ' ') {
-                // :
-                addtoken(":", lineno, FileIndex, true);
-                _tokensBack->setExpandedMacro(expandedMacro);
-                CurrentToken.clear();
-                continue;
-            } else if (ch==':' && CurrentToken.empty() && code.peek() == ':') {
-                // ::
-                ch = (char)code.get();
-                addtoken("::", lineno, FileIndex, true);
-                _tokensBack->setExpandedMacro(expandedMacro);
-                CurrentToken.clear();
-                continue;
-            } else {
-                if (CurrentToken == "#file") {
-                    // Handle this where strings are handled
-                    continue;
-                } else if (CurrentToken == "#endfile") {
-                    if (lineNumbers.empty() || fileIndexes.empty()) {
-                        cppcheckError(0);
-                        deallocateTokens();
-                        return;
-                    }
-
-                    lineno = lineNumbers.back();
-                    lineNumbers.pop_back();
-                    FileIndex = fileIndexes.back();
-                    fileIndexes.pop_back();
-                    CurrentToken.clear();
-                    continue;
-                }
-
+        if (ch == '.' &&
+            CurrentToken.length() > 0 &&
+            std::isdigit(CurrentToken[0])) {
+            // Don't separate doubles "5.4"
+        } else if (strchr("+-", ch) &&
+                   CurrentToken.length() > 0 &&
+                   std::isdigit(CurrentToken[0]) &&
+                   CurrentToken.compare(0,2,"0x") != 0 &&
+                   (CurrentToken[CurrentToken.length()-1] == 'e' ||
+                    CurrentToken[CurrentToken.length()-1] == 'E')) {
+            // Don't separate doubles "4.2e+10"
+        } else if (CurrentToken.empty() && ch == '.' && std::isdigit(code.peek())) {
+            // tokenize .125 into 0.125
+            CurrentToken = "0";
+        } else if (ch=='&' && code.peek() == '&') {
+            if (!CurrentToken.empty()) {
                 addtoken(CurrentToken.c_str(), lineno, FileIndex, true);
                 if (!CurrentToken.empty())
                     _tokensBack->setExpandedMacro(expandedMacro);
-
                 CurrentToken.clear();
+            }
 
-                if (ch == '\n') {
-                    ++lineno;
-                    continue;
-                } else if (ch == ' ') {
-                    continue;
+            // &&
+            ch = (char)code.get();
+            addtoken("&&", lineno, FileIndex, true);
+            _tokensBack->setExpandedMacro(expandedMacro);
+            continue;
+        } else if (ch==':' && CurrentToken.empty() && code.peek() == ' ') {
+            // :
+            addtoken(":", lineno, FileIndex, true);
+            _tokensBack->setExpandedMacro(expandedMacro);
+            CurrentToken.clear();
+            continue;
+        } else if (ch==':' && CurrentToken.empty() && code.peek() == ':') {
+            // ::
+            ch = (char)code.get();
+            addtoken("::", lineno, FileIndex, true);
+            _tokensBack->setExpandedMacro(expandedMacro);
+            CurrentToken.clear();
+            continue;
+        } else if (strchr("+-*/%&|^?!=<>[](){};:,.~\n ", ch)) {
+            if (CurrentToken == "#file") {
+                // Handle this where strings are handled
+                continue;
+            } else if (CurrentToken == "#endfile") {
+                if (lineNumbers.empty() || fileIndexes.empty()) {
+                    cppcheckError(0);
+                    deallocateTokens();
+                    return;
                 }
 
-                CurrentToken += ch;
-                // Add "++", "--" or ">>" token
-                if ((ch == '+' || ch == '-' || ch == '>') && (code.peek() == ch))
-                    CurrentToken += (char)code.get();
-                addtoken(CurrentToken.c_str(), lineno, FileIndex);
-                _tokensBack->setExpandedMacro(expandedMacro);
+                lineno = lineNumbers.top();
+                lineNumbers.pop();
+                FileIndex = fileIndexes.top();
+                fileIndexes.pop();
                 CurrentToken.clear();
                 continue;
             }
+
+            addtoken(CurrentToken.c_str(), lineno, FileIndex, true);
+            if (!CurrentToken.empty())
+                _tokensBack->setExpandedMacro(expandedMacro);
+
+            CurrentToken.clear();
+
+            if (ch == '\n') {
+                ++lineno;
+                continue;
+            } else if (ch == ' ') {
+                continue;
+            }
+
+            CurrentToken += ch;
+            // Add "++", "--" or ">>" token
+            if ((ch == '+' || ch == '-' || ch == '>') && (code.peek() == ch))
+                CurrentToken += (char)code.get();
+            addtoken(CurrentToken.c_str(), lineno, FileIndex);
+            _tokensBack->setExpandedMacro(expandedMacro);
+            CurrentToken.clear();
+            continue;
         }
 
         CurrentToken += ch;
@@ -1965,82 +1964,36 @@ bool Tokenizer::tokenize(std::istream &code,
     }
 
     // replace inline SQL with "asm()" (Oracle PRO*C). Ticket: #1959
-    for (Token *tok = _tokens; tok; tok = tok->next()) {
-        if (Token::simpleMatch(tok, "EXEC SQL")) {
-            // delete all tokens until ";"
-            const Token *end = tok->tokAt(2);
-            while (end && end->str() != ";")
-                end = end->next();
-
-            std::string instruction = tok->stringify(end);
-            Token::eraseTokens(tok, end);
-
-            // insert "asm ( "instruction" ) ;"
-            tok->str("asm");
-            // it can happen that 'end' is NULL when wrong code is inserted
-            if (!tok->next())
-                tok->insertToken(";");
-            tok->insertToken(")");
-            tok->insertToken("\"" + instruction + "\"");
-            tok->insertToken("(");
-            // jump to ';' and continue
-            tok = tok->tokAt(3);
-        }
-    }
+    simplifySQL();
 
     // Simplify JAVA/C# code
     if (isJavaOrCSharp())
         simplifyJavaAndCSharp();
+
+    // Concatenate double sharp: 'a ## b' -> 'ab'
+    concatenateDoubleSharp();
 
     if (!createLinks()) {
         // Source has syntax errors, can't proceed
         return false;
     }
 
-    //easy simplifications...
-    for (Token *tok = _tokens; tok; tok = tok->next()) {
+    // replace __LINE__ macro with line number
+    simplifyLineMacro();
 
-        // replace __LINE__ macro with line number
-        if (tok->str() == "__LINE__")
-            tok->str(MathLib::toString(tok->linenr()));
+    // replace 'NULL' and similiar '0'-defined macros with '0'
+    simplifyNull();
 
-        // 'double sharp' token concatenation
-        // TODO: pattern should be "%var%|%num% ## %var%|%num%"
-        while (Token::Match(tok, "%any% ## %any%") &&
-               (tok->isName() || tok->isNumber()) &&
-               (tok->tokAt(2)->isName() || tok->tokAt(2)->isNumber())) {
-            tok->str(tok->str() + tok->strAt(2));
-            tok->deleteNext(2);
-        }
+    // combine "- %num%"
+    concatenateNegativeNumber();
 
-        //Replace NULL with 0..
-        if (tok->str() == "NULL" || tok->str() == "__null" ||
-            tok->str() == "'\\0'" || tok->str() == "'\\x0'") {
-            tok->str("0");
-        } else if (tok->isNumber() &&
-                   MathLib::isInt(tok->str()) &&
-                   MathLib::toLongNumber(tok->str()) == 0) {
-            tok->str("0");
-        }
-
-        // Combine "- %num%" ..
-        if (Token::Match(tok, "?|:|,|(|[|=|return|case|sizeof|%op% - %num%")) {
-            tok->deleteNext();
-            tok->next()->str("-" + tok->next()->str());
-        }
-
-        // simplify round "(" parenthesis between "[;{}] and "{"
-        if (Token::Match(tok, "[;{}] ( {") &&
-            Token::simpleMatch(tok->linkAt(2), "} ) ;")) {
-            tok->linkAt(2)->previous()->deleteNext(2);
-            tok->deleteNext(2);
-        }
-    }
-
+    // simplify weird but legal code: "[;{}] ( { code; } ) ;"->"[;{}] code;"
+    simplifyRoundCurlyParenthesis();
 
     // Convert K&R function declarations to modern C
     simplifyVarDecl(true);
-    simplifyFunctionParameters();
+    if (!simplifyFunctionParameters())
+        return false;
 
     // check for simple syntax errors..
     for (const Token *tok = _tokens; tok; tok = tok->next()) {
@@ -2326,7 +2279,7 @@ bool Tokenizer::tokenize(std::istream &code,
     // then unsimplified function calls etc remain. These have the
     // "wrong" syntax. So this function will just fix so that the
     // syntax is corrected.
-    simplifyTemplates2();
+    TemplateSimplifier::cleanupAfterSimplify(_tokens);
 
     // Simplify the operator "?:"
     simplifyConditionOperator();
@@ -2385,101 +2338,10 @@ bool Tokenizer::tokenize(std::istream &code,
 
 bool Tokenizer::hasComplicatedSyntaxErrorsInTemplates()
 {
-    // check for more complicated syntax errors when using templates..
-    for (const Token *tok = _tokens; tok; tok = tok->next()) {
-        // skip executing scopes..
-        if (Token::Match(tok, ") const| {") || Token::Match(tok, "[,=] {")) {
-            while (tok->str() != "{")
-                tok = tok->next();
-            tok = tok->link();
-        }
-
-        // skip executing scopes (ticket #1984)..
-        if (Token::simpleMatch(tok, "; {"))
-            tok = tok->next()->link();
-
-        // skip executing scopes (ticket #3183)..
-        if (Token::simpleMatch(tok, "( {"))
-            tok = tok->next()->link();
-
-        // skip executing scopes (ticket #1985)..
-        if (Token::simpleMatch(tok, "try {")) {
-            tok = tok->next()->link();
-            while (Token::simpleMatch(tok, "} catch (")) {
-                tok = tok->linkAt(2);
-                if (Token::simpleMatch(tok, ") {"))
-                    tok = tok->next()->link();
-            }
-        }
-
-        // not start of statement?
-        if (tok->previous() && !Token::Match(tok, "[;{}]"))
-            continue;
-
-        // skip starting tokens.. ;;; typedef typename foo::bar::..
-        while (Token::Match(tok, "[;{}]"))
-            tok = tok->next();
-        while (Token::Match(tok, "typedef|typename"))
-            tok = tok->next();
-        while (Token::Match(tok, "%type% ::"))
-            tok = tok->tokAt(2);
-        if (!tok)
-            break;
-
-        // template variable or type..
-        if (Token::Match(tok, "%type% <")) {
-            // these are used types..
-            std::set<std::string> usedtypes;
-
-            // parse this statement and see if the '<' and '>' are matching
-            unsigned int level = 0;
-            for (const Token *tok2 = tok; tok2 && !Token::Match(tok2, "[;{}]"); tok2 = tok2->next()) {
-                if (tok2->str() == "(")
-                    tok2 = tok2->link();
-                else if (tok2->str() == "<") {
-                    bool inclevel = false;
-                    if (Token::simpleMatch(tok2->previous(), "operator <"))
-                        ;
-                    else if (level == 0)
-                        inclevel = true;
-                    else if (tok2->next() && tok2->next()->isStandardType())
-                        inclevel = true;
-                    else if (Token::simpleMatch(tok2, "< typename"))
-                        inclevel = true;
-                    else if (Token::Match(tok2->tokAt(-2), "<|, %type% <") && usedtypes.find(tok2->previous()->str()) != usedtypes.end())
-                        inclevel = true;
-                    else if (Token::Match(tok2, "< %type%") && usedtypes.find(tok2->next()->str()) != usedtypes.end())
-                        inclevel = true;
-                    else if (Token::Match(tok2, "< %type%")) {
-                        // is the next token a type and not a variable/constant?
-                        // assume it's a type if there comes another "<"
-                        const Token *tok3 = tok2->next();
-                        while (Token::Match(tok3, "%type% ::"))
-                            tok3 = tok3->tokAt(2);
-                        if (Token::Match(tok3, "%type% <"))
-                            inclevel = true;
-                    }
-
-                    if (inclevel) {
-                        ++level;
-                        if (Token::Match(tok2->tokAt(-2), "<|, %type% <"))
-                            usedtypes.insert(tok2->previous()->str());
-                    }
-                } else if (tok2->str() == ">") {
-                    if (level > 0)
-                        --level;
-                } else if (tok2->str() == ">>") {
-                    if (level > 0)
-                        --level;
-                    if (level > 0)
-                        --level;
-                }
-            }
-            if (level > 0) {
-                syntaxError(tok);
-                return true;
-            }
-        }
+    const Token *tok = TemplateSimplifier::hasComplicatedSyntaxErrorsInTemplates(_tokens);
+    if (tok) {
+        syntaxError(tok);
+        return true;
     }
 
     return false;
@@ -2518,7 +2380,8 @@ void Tokenizer::simplifyDefaultAndDeleteInsideClass()
                         tok2 = tok2->previous();
                     if (Token::Match(tok2, "[;{}]") || tok2->isName())
                         Token::eraseTokens(tok2, end);
-                    tok2 = end;
+                    else
+                        tok2 = end->previous();
                 }
             }
         }
@@ -2529,18 +2392,98 @@ bool Tokenizer::hasEnumsWithTypedef()
 {
     for (const Token *tok = _tokens; tok; tok = tok->next()) {
         if (Token::Match(tok, "enum %var% {")) {
-            for (const Token *tok2 = tok->tokAt(3); tok2; tok2 = tok2->next()) {
-                if (tok2->str() == "typedef") {
-                    syntaxError(tok2);
-                    return true;
-                } else if (tok2->str() == "}") {
-                    break;
-                }
+            tok = tok->tokAt(2);
+            const Token *tok2 = Token::findsimplematch(tok, "typedef", tok->link());
+            if (tok2) {
+                syntaxError(tok2);
+                return true;
             }
         }
     }
 
     return false;
+}
+
+void Tokenizer::concatenateDoubleSharp()
+{
+    for (Token *tok = _tokens; tok; tok = tok->next()) {
+        // TODO: pattern should be "%var%|%num% ## %var%|%num%"
+        while (Token::Match(tok, "%any% ## %any%") &&
+               (tok->isName() || tok->isNumber()) &&
+               (tok->tokAt(2)->isName() || tok->tokAt(2)->isNumber())) {
+            tok->str(tok->str() + tok->strAt(2));
+            tok->deleteNext(2);
+        }
+    }
+}
+
+void Tokenizer::simplifyLineMacro()
+{
+    for (Token *tok = _tokens; tok; tok = tok->next()) {
+        if (tok->str() == "__LINE__")
+            tok->str(MathLib::toString(tok->linenr()));
+    }
+}
+
+void Tokenizer::simplifyNull()
+{
+    for (Token *tok = _tokens; tok; tok = tok->next()) {
+        if (tok->str() == "NULL" || tok->str() == "__null" ||
+            tok->str() == "'\\0'" || tok->str() == "'\\x0'") {
+            tok->str("0");
+        } else if (tok->isNumber() &&
+                   MathLib::isInt(tok->str()) &&
+                   MathLib::toLongNumber(tok->str()) == 0) {
+            tok->str("0");
+        }
+    }
+}
+
+void Tokenizer::concatenateNegativeNumber()
+{
+    for (Token *tok = _tokens; tok; tok = tok->next()) {
+        if (Token::Match(tok, "?|:|,|(|[|=|return|case|sizeof|%op% - %num%")) {
+            tok->deleteNext();
+            tok->next()->str("-" + tok->next()->str());
+        }
+    }
+}
+
+void Tokenizer::simplifyRoundCurlyParenthesis()
+{
+    for (Token *tok = _tokens; tok; tok = tok->next()) {
+        while (Token::Match(tok, "[;{}] ( {") &&
+               Token::simpleMatch(tok->linkAt(2), "} ) ;")) {
+            tok->linkAt(2)->previous()->deleteNext(3);
+            tok->deleteNext(2);
+        }
+    }
+}
+
+void Tokenizer::simplifySQL()
+{
+    for (Token *tok = _tokens; tok; tok = tok->next()) {
+        if (Token::simpleMatch(tok, "EXEC SQL")) {
+            const Token *end = tok->tokAt(2);
+            while (end && end->str() != ";")
+                end = end->next();
+
+            std::string instruction = tok->stringify(end);
+            // delete all tokens until ';'
+            Token::eraseTokens(tok, end);
+
+            // insert "asm ( "instruction" ) ;"
+            tok->str("asm");
+            // it can happen that 'end' is NULL when wrong code is inserted
+            if (!tok->next())
+                tok->insertToken(";");
+            tok->insertToken(")");
+            tok->insertToken("\"" + instruction + "\"");
+            tok->insertToken("(");
+            // jump to ';' and continue
+            tok = tok->tokAt(3);
+        }
+    }
 }
 
 void Tokenizer::simplifyDebugNew()
@@ -2604,18 +2547,34 @@ void Tokenizer::simplifyDoublePlusAndDoubleMinus()
                 if (tok->next()->str() == "+") {
                     tok->deleteNext();
                     continue;
-                } else if (tok->next()->str() == "-") {
-                    tok->str("-");
-                    tok->deleteNext();
+                } else if (tok->next()->str()[0] == '-') {
+                    tok = tok->next();
+                    if (tok->str().size() == 1) {
+                        tok = tok->previous();
+                        tok->str("-");
+                        tok->deleteNext();
+                    } else if (tok->isNumber()) {
+                        tok->str(tok->str().substr(1));
+                        tok = tok->previous();
+                        tok->str("-");
+                    }
                     continue;
                 }
             } else if (tok->str() == "-") {
-                if (tok->next()->str() == "-") {
-                    tok->str("+");
+                if (tok->next()->str() == "+") {
                     tok->deleteNext();
                     continue;
-                } else if (tok->next()->str() == "+") {
-                    tok->deleteNext();
+                } else if (tok->next()->str()[0] == '-') {
+                    tok = tok->next();
+                    if (tok->str().size() == 1) {
+                        tok = tok->previous();
+                        tok->str("+");
+                        tok->deleteNext();
+                    } else if (tok->isNumber()) {
+                        tok->str(tok->str().substr(1));
+                        tok = tok->previous();
+                        tok->str("+");
+                    }
                     continue;
                 }
             }
@@ -2628,7 +2587,7 @@ void Tokenizer::simplifyDoublePlusAndDoubleMinus()
 void Tokenizer::simplifyJavaAndCSharp()
 {
     // better don't call isJava in the loop
-    bool isJava_ = isJava();
+    const bool isJava_ = isJava();
     for (Token *tok = _tokens; tok; tok = tok->next()) {
         if (tok->str() == "private")
             tok->str("private:");
@@ -2641,14 +2600,48 @@ void Tokenizer::simplifyJavaAndCSharp()
             if (Token::Match(tok, ") throws %var% {"))
                 tok->deleteNext(2);
         } else {
-            if (Token::Match(tok, "%type% [ ] %var% [=;]") &&
-                (!tok->previous() || Token::Match(tok->previous(), "[;{}]"))) {
+            //remove 'using var;' from code
+            if (Token::Match(tok, "using %var% ;") &&
+                (!tok->previous() || Token::Match(tok->previous(), "[,;{}]"))) {
                 tok->deleteNext(2);
-                tok->insertToken("*");
-                tok = tok->tokAt(2);
-                if (tok->next()->str() == "=")
-                    tok = tok->next();
+                tok->deleteThis();
             }
+
+            //simplify C# arrays of arrays and multidimension arrays
+            while (Token::Match(tok, "%type% [ ,|]") &&
+                   (!tok->previous() || Token::Match(tok->previous(), "[,;{}]"))) {
+                Token *tok2 = tok->tokAt(2);
+                unsigned int count = 1;
+                while (tok2 && tok2->str() == ",") {
+                    ++count;
+                    tok2 = tok2->next();
+                }
+                if (!tok2 || tok2->str() != "]")
+                    break;
+                tok2 = tok2->next();
+                while (Token::Match(tok2, "[ ,|]")) {
+                    tok2 = tok2->next();
+                    while (tok2 && tok2->str() == ",") {
+                        ++count;
+                        tok2 = tok2->next();
+                    }
+                    if (!tok2 || tok2->str() != "]")
+                        break;
+                    ++count;
+                    tok2 = tok2->next();
+                }
+                if (!tok2)
+                    break;
+                else if (Token::Match(tok2, "%var% [;,=]")) {
+                    Token::eraseTokens(tok, tok2);
+                    do {
+                        tok->insertToken("*");
+                    } while (--count);
+                    tok = tok2->tokAt(2);
+                }
+            }
+            if (!tok)
+                break;
         }
     }
 }
@@ -2706,835 +2699,75 @@ void Tokenizer::arraySize()
 
 void Tokenizer::simplifyLabelsCaseDefault()
 {
+    bool executablescope = false;
+    unsigned int indentlevel = 0;
     for (Token *tok = _tokens; tok; tok = tok->next()) {
+        // Simplify labels in the executable scope..
         if (Token::Match(tok, ") const| {")) {
-            // Simplify labels in the executable scope..
-            unsigned int indentlevel = 0;
-            while (NULL != (tok = tok->next())) {
-                if (tok->str() == "{") {
-                    if (tok->previous() && tok->previous()->str() == "=")
-                        tok = tok->link();
-                    else
-                        ++indentlevel;
-                } else if (tok->str() == "}") {
-                    --indentlevel;
-                    if (!indentlevel)
-                        break;
-                } else if (tok->str() == "(" || tok->str() == "[")
-                    tok = tok->link();
-
-                if (Token::Match(tok, "[;{}] case")) {
-                    while (NULL != (tok = tok->next())) {
-                        if (tok->str() == ":")
-                            break;
-                    }
-                    if (Token::Match(tok, ": !!;")) {
-                        tok->insertToken(";");
-                    }
-                } else if (Token::Match(tok, "[;{}] %var% : !!;")) {
-                    tok = tok->tokAt(2);
-                    tok->insertToken(";");
-                }
-            }
-        }
-    }
-}
-
-
-/**
- * is the token pointing at a template parameters block
- * < int , 3 > => yes
- * \param tok start token that must point at "<"
- * \return number of parameters (invalid parameters => 0)
- */
-static unsigned int templateParameters(const Token *tok)
-{
-    unsigned int numberOfParameters = 0;
-
-    if (!tok)
-        return 0;
-    if (tok->str() != "<")
-        return 0;
-    tok = tok->next();
-
-    unsigned int level = 0;
-
-    while (tok) {
-        if (level == 0)
-            ++numberOfParameters;
-
-        // skip std::
-        while (Token::Match(tok, "%var% ::"))
-            tok = tok->tokAt(2);
-        if (!tok)
-            return 0;
-
-        // num/type ..
-        if (!tok->isNumber() && !tok->isName())
-            return 0;
-        tok = tok->next();
-
-        // optional "*"
-        if (tok->str() == "*")
             tok = tok->next();
-
-        // inner template
-        if (tok->str() == "<") {
-            ++level;
-            tok = tok->next();
-            continue;
+            if (tok->str() == "const")
+                tok = tok->next();
+            executablescope = true;
         }
 
-        // ,/>
-        while (tok->str() == ">") {
-            if (level == 0)
-                return numberOfParameters;
-            --level;
-            tok = tok->next();
-        }
-        if (tok->str() != ",")
-            break;
-        tok = tok->next();
-    }
-    return 0;
-}
-
-
-/**
- * Remove "template < ..." they can cause false positives because they are not expanded
- */
-static void removeTemplates(Token *tok)
-{
-    bool goback = false;
-    for (; tok; tok = tok->next()) {
-        if (goback) {
-            tok = tok->previous();
-            goback = false;
-        }
-        if (!Token::simpleMatch(tok, "template <"))
+        if (!executablescope)
             continue;
 
-        for (const Token *tok2 = tok->next(); tok2; tok2 = tok2->next()) {
-            if (tok2->str() == "{") {
-                tok2 = tok2->link()->next();
-                Token::eraseTokens(tok, tok2);
-                if (tok2 && tok2->str() == ";" && tok2->next())
-                    tok->deleteNext();
-                tok->deleteThis();
-                goback = true;
-                break;
-            }
-            // don't remove constructor
-            if (tok2->str() == "explicit") {
-                Token::eraseTokens(tok, tok2);
-                tok->deleteThis();
-                goback = true;
-                break;
-            }
-            if (tok2->str() == "(") {
-                tok2 = tok2->link();
-            } else if (tok2->str() == ";") {
-                Token::eraseTokens(tok, tok2->next());
-                tok->deleteThis();
-                goback = true;
-                break;
-            } else if (Token::Match(tok2, ">|>> class %var% [,)]")) {
-                Token::eraseTokens(tok,tok2->next());
-                tok->deleteThis();
-                goback = true;
-                break;
-            }
-        }
-    }
-}
-
-std::set<std::string> Tokenizer::simplifyTemplatesExpandSpecialized()
-{
-    std::set<std::string> expandedtemplates;
-
-    // Locate specialized templates..
-    for (Token *tok = _tokens; tok; tok = tok->next()) {
-        if (tok->str() != "template")
-            continue;
-        if (!Token::simpleMatch(tok->next(), "< >"))
-            continue;
-
-        // what kind of template is this?
-        Token *tok2 = tok->tokAt(3);
-        while (tok2 && (tok2->isName() || tok2->str() == "*"))
-            tok2 = tok2->next();
-
-        if (!templateParameters(tok2))
-            continue;
-
-        // unknown template.. bail out
-        if (!tok2->previous()->isName())
-            continue;
-
-        tok2 = tok2->previous();
-        std::string s;
-        {
-            std::ostringstream ostr;
-            const Token *tok3 = tok2;
-            for (tok3 = tok2; tok3 && tok3->str() != ">"; tok3 = tok3->next()) {
-                if (tok3 != tok2)
-                    ostr << " ";
-                ostr << tok3->str();
-            }
-            if (!Token::simpleMatch(tok3, "> ("))
+        if (tok->str() == "{") {
+            if (tok->previous()->str() == "=")
+                tok = tok->link();
+            else
+                ++indentlevel;
+        } else if (tok->str() == "}") {
+            --indentlevel;
+            if (!indentlevel) {
+                executablescope = false;
                 continue;
-            s = ostr.str();
-        }
-
-        // save search pattern..
-        const std::string pattern(s + " > (");
-
-        // remove spaces to create new name
-        while (s.find(" ") != std::string::npos)
-            s.erase(s.find(" "), 1);
-        const std::string name(s + ">");
-        expandedtemplates.insert(name);
-
-        // Rename template..
-        Token::eraseTokens(tok2, Token::findsimplematch(tok2, "("));
-        tok2->str(name);
-
-        // delete the "template < >"
-        tok->deleteNext(2);
-        tok->deleteThis();
-
-        // Use this special template in the code..
-        while (NULL != (tok2 = const_cast<Token *>(Token::findmatch(tok2, pattern.c_str())))) {
-            Token::eraseTokens(tok2, Token::findsimplematch(tok2, "("));
-            tok2->str(name);
-        }
-    }
-
-    return expandedtemplates;
-}
-
-std::list<Token *> Tokenizer::simplifyTemplatesGetTemplateDeclarations()
-{
-    std::list<Token *> templates;
-    for (Token *tok = _tokens; tok; tok = tok->next()) {
-        if (Token::simpleMatch(tok, "template <")) {
-            // set member variable, the code has templates.
-            // this info is used by checks
-            _codeWithTemplates = true;
-
-            for (const Token *tok2 = tok; tok2; tok2 = tok2->next()) {
-                // Just a declaration => ignore this
-                if (tok2->str() == ";")
-                    break;
-
-                // Implementation => add to "templates"
-                if (tok2->str() == "{") {
-                    templates.push_back(tok);
-                    break;
-                }
             }
-        }
-    }
-    return templates;
-}
+        } else if (tok->str() == "(" || tok->str() == "[")
+            tok = tok->link();
 
-std::list<Token *> Tokenizer::simplifyTemplatesGetTemplateInstantiations()
-{
-    std::list<Token *> used;
-
-    for (Token *tok = _tokens; tok; tok = tok->next()) {
-        // template definition.. skip it
-        if (Token::simpleMatch(tok, "template <")) {
-            unsigned int level = 0;
-
-            // Goto the end of the template definition
-            for (; tok; tok = tok->next()) {
-                // skip '<' .. '>'
-                if (tok->str() == "<")
-                    ++level;
-                else if (tok->str() == ">") {
-                    if (level <= 1)
-                        break;
-                    --level;
-                }
-
-                // skip inner '(' .. ')' and '{' .. '}'
-                else if (tok->str() == "{" || tok->str() == "(") {
-                    // skip inner tokens. goto ')' or '}'
-                    tok = tok->link();
-
-                    // this should be impossible. but break out anyway
-                    if (!tok)
-                        break;
-
-                    // the end '}' for the template definition => break
-                    if (tok->str() == "}")
-                        break;
-                }
-
-                // the end ';' for the template definition
-                else if (tok->str() == ";") {
+        if (Token::Match(tok, "[;{}] case")) {
+            while (NULL != (tok = tok->next())) {
+                if (tok->str() == ":")
                     break;
-                }
             }
             if (!tok)
                 break;
-        } else if (Token::Match(tok->previous(), "[({};=] %var% <") ||
-                   Token::Match(tok->tokAt(-2), "[,:] private|protected|public %var% <")) {
-
-            // Add inner template instantiations first => go to the ">"
-            // and then parse backwards, adding all seen instantiations
-            const Token *tok2;
-
-            // goto end ">" token
-            unsigned int level = 0;
-            for (tok2 = tok; tok2; tok2 = tok2->next()) {
-                if (tok2->str() == "<") {
-                    ++level;
-                } else if (tok2->str() == ">") {
-                    if (level <= 1)
-                        break;
-                    --level;
-                }
+            else if (tok->str() == ":" &&
+                     (!tok->next() || tok->next()->str() != ";")) {
+                tok->insertToken(";");
             }
-
-            // parse backwards and add template instantiations
-            for (; tok2 && tok2 != tok; tok2 = tok2->previous()) {
-                if (Token::Match(tok2, ", %var% <") &&
-                    templateParameters(tok2->tokAt(2))) {
-                    used.push_back(tok2->next());
-                }
-            }
-
-            // Add outer template..
-            if (templateParameters(tok->next()))
-                used.push_back(tok);
-        }
-    }
-
-    return used;
-}
-
-
-void Tokenizer::simplifyTemplatesUseDefaultArgumentValues(const std::list<Token *> &templates,
-        const std::list<Token *> &templateInstantiations)
-{
-    for (std::list<Token *>::const_iterator iter1 = templates.begin(); iter1 != templates.end(); ++iter1) {
-        // template parameters with default value has syntax such as:
-        //     x = y
-        // this list will contain all the '=' tokens for such arguments
-        std::list<Token *> eq;
-
-        // parameter number. 1,2,3,..
-        std::size_t templatepar = 1;
-
-        // the template classname. This will be empty for template functions
-        std::string classname;
-
-        // Scan template declaration..
-        for (Token *tok = *iter1; tok; tok = tok->next()) {
-            // end of template parameters?
-            if (tok->str() == ">") {
-                if (Token::Match(tok, "> class|struct %var%"))
-                    classname = tok->strAt(2);
-                break;
-            }
-
-            // next template parameter
-            if (tok->str() == ",")
-                ++templatepar;
-
-            // default parameter value
-            else if (tok->str() == "=")
-                eq.push_back(tok);
-        }
-        if (eq.empty() || classname.empty())
-            continue;
-
-        // iterate through all template instantiations
-        for (std::list<Token *>::const_iterator iter2 = templateInstantiations.begin(); iter2 != templateInstantiations.end(); ++iter2) {
-            Token *tok = *iter2;
-
-            if (!Token::Match(tok, (classname + " < %any%").c_str()))
-                continue;
-
-            // count the parameters..
-            unsigned int usedpar = 1;
-            for (tok = tok->tokAt(3); tok; tok = tok->tokAt(2)) {
-                if (tok->str() == ">")
-                    break;
-
-                if (tok->str() == ",")
-                    ++usedpar;
-
-                else
-                    break;
-            }
-            if (tok && tok->str() == ">") {
-                tok = tok->previous();
-                std::list<Token *>::const_iterator it = eq.begin();
-                for (std::size_t i = (templatepar - eq.size()); it != eq.end() && i < usedpar; ++i)
-                    ++it;
-                while (it != eq.end()) {
-                    tok->insertToken(",");
-                    tok = tok->next();
-                    const Token *from = (*it)->next();
-                    std::stack<Token *> links;
-                    while (from && (!links.empty() || (from->str() != "," && from->str() != ">"))) {
-                        tok->insertToken(from->str());
-                        tok = tok->next();
-                        if (Token::Match(tok, "(|["))
-                            links.push(tok);
-                        else if (!links.empty() && Token::Match(tok, ")|]")) {
-                            Token::createMutualLinks(links.top(), tok);
-                            links.pop();
-                        }
-                        from = from->next();
-                    }
-                    ++it;
-                }
-            }
-        }
-
-        for (std::list<Token *>::iterator it = eq.begin(); it != eq.end(); ++it) {
-            (*it)->deleteNext();
-            (*it)->deleteThis();
+        } else if (Token::Match(tok, "[;{}] %var% : !!;")) {
+            tok = tok->tokAt(2);
+            tok->insertToken(";");
         }
     }
 }
 
-/**
- * Match template declaration/instantiation
- * @param instance template instantiation
- * @param name name of template
- * @param numberOfArguments number of template arguments
- * @param patternAfter pattern that must match the tokens after the ">"
- * @return match => true
- */
-static bool simplifyTemplatesInstantiateMatch(const Token *instance, const std::string &name, size_t numberOfArguments, const char patternAfter[])
+
+
+
+void Tokenizer::simplifyTemplates()
 {
-    if (!Token::simpleMatch(instance, (name + " <").c_str()))
-        return false;
-
-    if (numberOfArguments != templateParameters(instance->next()))
-        return false;
-
-    if (patternAfter) {
-        const Token *tok = Token::findsimplematch(instance, ">");
-        if (!tok || !Token::Match(tok->next(), patternAfter))
-            return false;
-    }
-
-    // nothing mismatching was found..
-    return true;
-}
-
-int Tokenizer::simplifyTemplatesGetTemplateNamePosition(const Token *tok)
-{
-    // get the position of the template name
-    int namepos = 0;
-    if (Token::Match(tok, "> class|struct %type% {|:"))
-        namepos = 2;
-    else if (Token::Match(tok, "> %type% *|&| %type% ("))
-        namepos = 2;
-    else if (Token::Match(tok, "> %type% %type% *|&| %type% ("))
-        namepos = 3;
-    else {
-        // debug message that we bail out..
-        if (_settings->debugwarnings) {
-            std::list<ErrorLogger::ErrorMessage::FileLocation> locationList;
-            ErrorLogger::ErrorMessage::FileLocation loc;
-            loc.line = tok->linenr();
-            loc.setfile(file(tok));
-            locationList.push_back(loc);
-
-            const ErrorLogger::ErrorMessage errmsg(locationList,
-                                                   Severity::debug,
-                                                   "simplifyTemplates: bailing out",
-                                                   "debug",
-                                                   false);
-
-            if (_errorLogger)
-                _errorLogger->reportErr(errmsg);
-            else
-                Check::reportError(errmsg);
-        }
-        return -1;
-    }
-    if ((tok->strAt(namepos) == "*" || tok->strAt(namepos) == "&"))
-        ++namepos;
-
-    return namepos;
-}
-
-void Tokenizer::simplifyTemplatesExpandTemplate(const Token *tok,
-        const std::string &name,
-        std::vector<const Token *> &typeParametersInDeclaration,
-        const std::string &newName,
-        std::vector<const Token *> &typesUsedInTemplateInstantion,
-        std::list<Token *> &templateInstantiations)
-{
-    int _indentlevel = 0;
-    int _parlevel = 0;
-    for (const Token *tok3 = _tokens; tok3; tok3 = tok3->next()) {
-        if (tok3->str() == "{")
-            ++_indentlevel;
-        else if (tok3->str() == "}")
-            --_indentlevel;
-        else if (tok3->str() == "(")
-            ++_parlevel;
-        else if (tok3->str() == ")")
-            --_parlevel;
-
-        // Start of template..
-        if (tok3 == tok) {
-            tok3 = tok3->next();
-        }
-
-        // member function implemented outside class definition
-        else if (_indentlevel == 0 &&
-                 _parlevel == 0 &&
-                 simplifyTemplatesInstantiateMatch(tok3, name, typeParametersInDeclaration.size(), ":: ~| %var% (")) {
-            addtoken(newName.c_str(), tok3->linenr(), tok3->fileIndex());
-            while (tok3->str() != "::")
-                tok3 = tok3->next();
-        }
-
-        // not part of template.. go on to next token
-        else
-            continue;
-
-        int indentlevel = 0;
-        std::stack<Token *> braces;     // holds "{" tokens
-        std::stack<Token *> brackets;   // holds "(" tokens
-        std::stack<Token *> brackets2;  // holds "[" tokens
-
-        for (; tok3; tok3 = tok3->next()) {
-            if (tok3->str() == "{")
-                ++indentlevel;
-
-            else if (tok3->str() == "}") {
-                if (indentlevel <= 1 && brackets.empty() && brackets2.empty()) {
-                    // there is a bug if indentlevel is 0
-                    // the "}" token should only be added if indentlevel is 1 but I add it always intentionally
-                    // if indentlevel ever becomes 0, cppcheck will write:
-                    // ### Error: Invalid number of character {
-                    addtoken("}", tok3->linenr(), tok3->fileIndex());
-                    Token::createMutualLinks(braces.top(), _tokensBack);
-                    braces.pop();
-                    break;
-                }
-                --indentlevel;
-            }
-
-
-            if (tok3->isName()) {
-                // search for this token in the type vector
-                unsigned int itype = 0;
-                while (itype < typeParametersInDeclaration.size() && typeParametersInDeclaration[itype]->str() != tok3->str())
-                    ++itype;
-
-                // replace type with given type..
-                if (itype < typeParametersInDeclaration.size()) {
-                    for (const Token *typetok = typesUsedInTemplateInstantion[itype];
-                         typetok && !Token::Match(typetok, "[,>]");
-                         typetok = typetok->next()) {
-                        addtoken(typetok, tok3->linenr(), tok3->fileIndex());
-                    }
-                    continue;
-                }
-            }
-
-            // replace name..
-            if (Token::Match(tok3, (name + " !!<").c_str())) {
-                addtoken(newName.c_str(), tok3->linenr(), tok3->fileIndex());
-                continue;
-            }
-
-            // copy
-            addtoken(tok3, tok3->linenr(), tok3->fileIndex());
-            if (Token::Match(tok3, "%type% <")) {
-                //if (!Token::simpleMatch(tok3, (name + " <").c_str()))
-                //done = false;
-                templateInstantiations.push_back(_tokensBack);
-            }
-
-            // link() newly tokens manually
-            if (tok3->str() == "{") {
-                braces.push(_tokensBack);
-            } else if (tok3->str() == "}") {
-                assert(braces.empty() == false);
-                Token::createMutualLinks(braces.top(), _tokensBack);
-                braces.pop();
-            } else if (tok3->str() == "(") {
-                brackets.push(_tokensBack);
-            } else if (tok3->str() == "[") {
-                brackets2.push(_tokensBack);
-            } else if (tok3->str() == ")") {
-                assert(brackets.empty() == false);
-                Token::createMutualLinks(brackets.top(), _tokensBack);
-                brackets.pop();
-            } else if (tok3->str() == "]") {
-                assert(brackets2.empty() == false);
-                Token::createMutualLinks(brackets2.top(), _tokensBack);
-                brackets2.pop();
-            }
-
-        }
-
-        assert(braces.empty());
-        assert(brackets.empty());
-    }
-}
-
-void Tokenizer::simplifyTemplateInstantions(const Token *tok,
-        std::list<Token *> &templateInstantiations,
-        std::set<std::string> &expandedtemplates)
-{
-    // this variable is not used at the moment. The intention was to
-    // allow continuous instantiations until all templates has been expanded
-    //bool done = false;
-
-    // Contains tokens such as "T"
-    std::vector<const Token *> typeParametersInDeclaration;
-    for (tok = tok->tokAt(2); tok && tok->str() != ">"; tok = tok->next()) {
-        if (Token::Match(tok, "%var% ,|>"))
-            typeParametersInDeclaration.push_back(tok);
-    }
-
-    // bail out if the end of the file was reached
-    if (!tok)
-        return;
-
-    // get the position of the template name
-    int namepos = simplifyTemplatesGetTemplateNamePosition(tok);
-    if (namepos == -1)
-        return;
-
-    // name of template function/class..
-    const std::string name(tok->strAt(namepos));
-
-    const bool isfunc(tok->strAt(namepos + 1) == "(");
-
-    // locate template usage..
-    std::string::size_type amountOftemplateInstantiations = templateInstantiations.size();
-    unsigned int recursiveCount = 0;
-
-    for (std::list<Token *>::const_iterator iter2 = templateInstantiations.begin(); iter2 != templateInstantiations.end(); ++iter2) {
-        if (amountOftemplateInstantiations != templateInstantiations.size()) {
-            amountOftemplateInstantiations = templateInstantiations.size();
-            simplifyCalculations();
-            ++recursiveCount;
-            if (recursiveCount > 100) {
-                // bail out..
-                break;
-            }
-        }
-
-        Token * const tok2 = *iter2;
-        if (tok2->str() != name)
-            continue;
-
+    for (Token *tok = _tokens; tok; tok = tok->next()) {
         // #2648 - simple fix for sizeof used as template parameter
         // TODO: this is a bit hardcoded. make a bit more generic
-        if (Token::Match(tok2, "%var% < sizeof ( %type% ) >") && tok2->tokAt(4)->isStandardType()) {
-            Token * const tok3 = tok2->next();
+        if (Token::Match(tok, "%var% < sizeof ( %type% ) >") && tok->tokAt(4)->isStandardType()) {
+            Token * const tok3 = tok->next();
             const unsigned int sizeOfResult = sizeOfType(tok3->tokAt(3));
             tok3->deleteNext(4);
             tok3->insertToken(MathLib::toString<unsigned int>(sizeOfResult));
         }
-
-        if (Token::Match(tok2->previous(), "[;{}=]") &&
-            !simplifyTemplatesInstantiateMatch(*iter2, name, typeParametersInDeclaration.size(), isfunc ? "(" : "*| %var%"))
-            continue;
-
-        // New type..
-        std::vector<const Token *> typesUsedInTemplateInstantion;
-        std::string typeForNewNameStr;
-        std::string templateMatchPattern(name + " < ");
-        for (const Token *tok3 = tok2->tokAt(2); tok3 && tok3->str() != ">"; tok3 = tok3->next()) {
-            // #2648 - unhandled parenthesis => bail out
-            // #2721 - unhandled [ => bail out
-            if (tok3->str() == "(" || tok3->str() == "[") {
-                typeForNewNameStr.clear();
-                break;
-            }
-            if (!tok3->next()) {
-                typeForNewNameStr.clear();
-                break;
-            }
-            templateMatchPattern += tok3->str();
-            templateMatchPattern += " ";
-            if (Token::Match(tok3->previous(), "[<,]"))
-                typesUsedInTemplateInstantion.push_back(tok3);
-            // add additional type information
-            if (tok3->isUnsigned())
-                typeForNewNameStr += "unsigned";
-            else if (tok3->isSigned())
-                typeForNewNameStr += "signed";
-            if (tok3->isLong())
-                typeForNewNameStr += "long";
-            typeForNewNameStr += tok3->str();
-        }
-        templateMatchPattern += ">";
-        const std::string typeForNewName(typeForNewNameStr);
-
-        if (typeForNewName.empty() || typeParametersInDeclaration.size() != typesUsedInTemplateInstantion.size()) {
-            if (_settings->debugwarnings) {
-                std::list<ErrorLogger::ErrorMessage::FileLocation> locationList;
-                ErrorLogger::ErrorMessage::FileLocation loc;
-                loc.line = tok2->linenr();
-                loc.setfile(file(tok2));
-                locationList.push_back(loc);
-
-                const ErrorLogger::ErrorMessage errmsg(locationList,
-                                                       Severity::debug,
-                                                       "Failed to instantiate template. The checking continues anyway.",
-                                                       "debug",
-                                                       false);
-
-                _errorLogger->reportErr(errmsg);
-            }
-            if (typeForNewName.empty())
-                continue;
-            break;
-        }
-
-        // New classname/funcname..
-        const std::string newName(name + "<" + typeForNewName + ">");
-
-        if (expandedtemplates.find(newName) == expandedtemplates.end()) {
-            expandedtemplates.insert(newName);
-            simplifyTemplatesExpandTemplate(tok,name,typeParametersInDeclaration,newName,typesUsedInTemplateInstantion,templateInstantiations);
-        }
-
-        // Replace all these template usages..
-        std::list< std::pair<Token *, Token *> > removeTokens;
-        for (Token *tok4 = tok2; tok4; tok4 = tok4->next()) {
-            if (Token::simpleMatch(tok4, templateMatchPattern.c_str())) {
-                Token * tok5 = tok4->tokAt(2);
-                unsigned int typeCountInInstantion = 1U; // There is always atleast one type
-                const Token *typetok = (!typesUsedInTemplateInstantion.empty()) ? typesUsedInTemplateInstantion[0] : 0;
-                while (tok5 && tok5->str() != ">") {
-                    if (tok5->str() != ",") {
-                        if (!typetok ||
-                            tok5->isUnsigned() != typetok->isUnsigned() ||
-                            tok5->isSigned() != typetok->isSigned() ||
-                            tok5->isLong() != typetok->isLong()) {
-                            break;
-                        }
-
-                        typetok = typetok ? typetok->next() : 0;
-                    } else {
-                        typetok = (typeCountInInstantion < typesUsedInTemplateInstantion.size()) ? typesUsedInTemplateInstantion[typeCountInInstantion] : 0;
-                        ++typeCountInInstantion;
-                    }
-                    tok5 = tok5->next();
-                }
-
-                // matching template usage => replace tokens..
-                // Foo < int >  =>  Foo<int>
-                if (tok5 && tok5->str() == ">" && typeCountInInstantion == typesUsedInTemplateInstantion.size()) {
-                    tok4->str(newName);
-                    for (Token *tok6 = tok4->next(); tok6 != tok5; tok6 = tok6->next()) {
-                        if (tok6->isName())
-                            templateInstantiations.remove(tok6);
-                    }
-                    removeTokens.push_back(std::pair<Token*,Token*>(tok4, tok5->next()));
-                }
-
-                tok4 = tok5;
-                if (!tok4)
-                    break;
-            }
-        }
-        while (!removeTokens.empty()) {
-            Token::eraseTokens(removeTokens.back().first, removeTokens.back().second);
-            removeTokens.pop_back();
-        }
-    }
-}
-
-void Tokenizer::simplifyTemplates()
-{
-    std::set<std::string> expandedtemplates(simplifyTemplatesExpandSpecialized());
-
-    // Locate templates..
-    std::list<Token *> templates(simplifyTemplatesGetTemplateDeclarations());
-
-    if (templates.empty()) {
-        removeTemplates(_tokens);
-        return;
     }
 
-    // There are templates..
-    // Remove "typename" unless used in template arguments..
-    for (Token *tok = _tokens; tok; tok = tok->next()) {
-        if (tok->str() == "typename")
-            tok->deleteThis();
-
-        if (Token::simpleMatch(tok, "template <")) {
-            while (tok && tok->str() != ">")
-                tok = tok->next();
-            if (!tok)
-                break;
-        }
-    }
-
-    // Locate possible instantiations of templates..
-    std::list<Token *> templateInstantiations(simplifyTemplatesGetTemplateInstantiations());
-
-    // No template instantiations? Then remove all templates.
-    if (templateInstantiations.empty()) {
-        removeTemplates(_tokens);
-        return;
-    }
-
-    // Template arguments with default values
-    simplifyTemplatesUseDefaultArgumentValues(templates, templateInstantiations);
-
-    // expand templates
-    //bool done = false;
-    //while (!done)
-    {
-        //done = true;
-        for (std::list<Token *>::reverse_iterator iter1 = templates.rbegin(); iter1 != templates.rend(); ++iter1) {
-            simplifyTemplateInstantions(*iter1, templateInstantiations, expandedtemplates);
-        }
-    }
-
-    removeTemplates(_tokens);
-}
-//---------------------------------------------------------------------------
-
-void Tokenizer::simplifyTemplates2()
-{
-    bool goback = false;
-    for (Token *tok = _tokens; tok; tok = tok->next()) {
-        if (goback) {
-            tok = tok->previous();
-            goback = false;
-        }
-        if (tok->str() == "(")
-            tok = tok->link();
-
-        else if (Token::Match(tok, "%type% <") &&
-                 (!tok->previous() || tok->previous()->str() == ";")) {
-            const Token *tok2 = tok->tokAt(2);
-            std::string type;
-            while (Token::Match(tok2, "%type% ,") || Token::Match(tok2, "%num% ,")) {
-                type += tok2->str() + ",";
-                tok2 = tok2->tokAt(2);
-            }
-            if (Token::Match(tok2, "%type% > (") || Token::Match(tok2, "%num% > (")) {
-                type += tok2->str();
-                tok->str(tok->str() + "<" + type + ">");
-                Token::eraseTokens(tok, tok2->tokAt(2));
-                if (tok == _tokens)
-                    goback = true;
-            }
-        }
-    }
+    TemplateSimplifier::simplifyTemplates(
+        _tokens,
+        &_tokensBack,
+        _errorLogger,
+        _settings,
+        _files,
+        _codeWithTemplates);
 }
 //---------------------------------------------------------------------------
 
@@ -3646,10 +2879,6 @@ void Tokenizer::setVarId()
 
         if (Token::Match(tok, "using namespace %type% ;")) {
             tok = tok->next();
-            continue;
-        }
-
-        if (tok->str() == "using") {
             continue;
         }
 
@@ -3802,16 +3031,14 @@ void Tokenizer::setVarId()
                 continue;
 
             // Search for function declaration, e.g. void f( int c );
-            if (Token::Match(tok2->next(), "%num%") ||
-                Token::Match(tok2->next(), "%bool%") ||
-                tok2->next()->str()[0] == '"' ||
-                tok2->next()->str()[0] == '\'' ||
-                tok2->next()->str() == "*" ||
-                tok2->next()->varId() != 0) {
-                // This is not a function
-            } else {
+            if (!Token::Match(tok2->next(), "%num%") &&
+                !Token::Match(tok2->next(), "%bool%") &&
+                tok2->next()->str()[0] != '"' &&
+                tok2->next()->str()[0] != '\'' &&
+                tok2->next()->str() != "*" &&
+                tok2->next()->str() != "&" &&
+                tok2->next()->varId() == 0)
                 continue;
-            }
         }
 
         // Don't set variable id for 'AAA a[0] = 0;' declaration (#2638)
@@ -4021,86 +3248,68 @@ void Tokenizer::setVarId()
     }
 }
 
+static bool linkBrackets(Tokenizer* tokenizer, std::stack<const Token*>& type, std::stack<Token*>& links, Token* token, char open, char close)
+{
+    if (token->str()[0] == open) {
+        links.push(token);
+        type.push(token);
+    } else if (token->str()[0] == close) {
+        if (links.empty()) {
+            // Error, { and } don't match.
+            tokenizer->syntaxError(token, open);
+            return false;
+        }
+        if (type.top()->str()[0] != open) {
+            tokenizer->syntaxError(type.top(), type.top()->str()[0]);
+            return false;
+        }
+        type.pop();
+
+        Token::createMutualLinks(links.top(), token);
+        links.pop();
+    }
+    return(true);
+}
+
 bool Tokenizer::createLinks()
 {
-    std::list<const Token*> type;
-    std::list<Token*> links;
-    std::list<Token*> links2;
-    std::list<Token*> links3;
+    std::stack<const Token*> type;
+    std::stack<Token*> links1;
+    std::stack<Token*> links2;
+    std::stack<Token*> links3;
     for (Token *token = _tokens; token; token = token->next()) {
         if (token->link()) {
             token->link(0);
         }
 
-        if (token->str() == "{") {
-            links.push_back(token);
-            type.push_back(token);
-        } else if (token->str() == "}") {
-            if (links.empty()) {
-                // Error, { and } don't match.
-                syntaxError(token, '{');
-                return false;
-            }
-            if (type.back()->str() != "{") {
-                syntaxError(type.back(), type.back()->str()[0]);
-                return false;
-            }
-            type.pop_back();
+        bool validSyntax = linkBrackets(this, type, links1, token, '{', '}');
+        if (!validSyntax)
+            return false;
 
-            Token::createMutualLinks(links.back(), token);
-            links.pop_back();
-        } else if (token->str() == "(") {
-            links2.push_back(token);
-            type.push_back(token);
-        } else if (token->str() == ")") {
-            if (links2.empty()) {
-                // Error, ( and ) don't match.
-                syntaxError(token, '(');
-                return false;
-            }
-            if (type.back()->str() != "(") {
-                syntaxError(type.back(), type.back()->str()[0]);
-                return false;
-            }
-            type.pop_back();
+        validSyntax = linkBrackets(this, type, links2, token, '(', ')');
+        if (!validSyntax)
+            return false;
 
-            Token::createMutualLinks(links2.back(), token);
-            links2.pop_back();
-        } else if (token->str() == "[") {
-            links3.push_back(token);
-            type.push_back(token);
-        } else if (token->str() == "]") {
-            if (links3.empty()) {
-                // Error, [ and ] don't match.
-                syntaxError(token, '[');
-                return false;
-            }
-            if (type.back()->str() != "[") {
-                syntaxError(type.back(), type.back()->str()[0]);
-                return false;
-            }
-            type.pop_back();
-
-            Token::createMutualLinks(links3.back(), token);
-            links3.pop_back();
-        }
+        validSyntax = linkBrackets(this, type, links3, token, '[', ']');
+        if (!validSyntax)
+            return false;
     }
 
-    if (!links.empty()) {
+    if (!links1.empty()) {
         // Error, { and } don't match.
-        syntaxError(links.back(), '{');
+        syntaxError(links1.top(), '{');
         return false;
     }
 
     if (!links2.empty()) {
         // Error, ( and ) don't match.
-        syntaxError(links2.back(), '(');
+        syntaxError(links2.top(), '(');
         return false;
     }
 
     if (!links3.empty()) {
         // Error, [ and ] don't match.
-        syntaxError(links3.back(), '[');
+        syntaxError(links3.top(), '[');
         return false;
     }
 
@@ -4481,7 +3690,7 @@ bool Tokenizer::simplifyTokenList()
     // simplify "x=realloc(y,0);" => "free(y); x=0;"..
     // and "x = realloc (0, n);" => "x = malloc(n);"
     for (Token *tok = _tokens; tok; tok = tok->next()) {
-        if (Token::Match(tok, "; %var% = realloc ( %var% , 0 ) ;")) {
+        if (Token::Match(tok, "[;{}:] %var% = realloc ( %var% , 0 ) ;")) {
             const std::string varname(tok->next()->str());
             const unsigned int varid(tok->next()->varId());
 
@@ -4504,7 +3713,7 @@ bool Tokenizer::simplifyTokenList()
             tok->insertToken("=");
             tok->insertToken(varname);
             tok->next()->varId(varid);
-        } else if (Token::Match(tok, "; %var% = realloc ( 0 , %num% ) ;")) {
+        } else if (Token::Match(tok, "[;{}:] %var% = realloc ( 0 , %num% ) ;")) {
             tok = tok->tokAt(3);
             // Change function name "realloc" to "malloc"
             tok->str("malloc");
@@ -4585,15 +3794,7 @@ bool Tokenizer::simplifyTokenList()
 
     simplifyFlowControl();
 
-    // Remove redundant consecutive braces, i.e. '.. { { .. } } ..' -> '.. { .. } ..'.
-    for (Token *tok = _tokens; tok;) {
-        if (Token::simpleMatch(tok, "{ {") && Token::simpleMatch(tok->next()->link(), "} }")) {
-            //remove internal parentheses
-            tok->next()->link()->deleteThis();
-            tok->deleteNext();
-        } else
-            tok = tok->next();
-    }
+    simplifyRedundantConsecutiveBraces();
 
     if (!validate())
         return false;
@@ -4602,6 +3803,9 @@ bool Tokenizer::simplifyTokenList()
 
     if (_settings->debug) {
         _tokens->printOut(0, _files);
+
+        if (_settings->_verbose)
+            getSymbolDatabase()->printOut("Symbol database");
     }
 
     if (_settings->debugwarnings) {
@@ -4693,6 +3897,10 @@ void Tokenizer::simplifyFlowControl()
         }
 
         if (tok->str() == "{") {
+            if (tok->previous() && tok->previous()->str() == "=") {
+                tok = tok->link();
+                continue;
+            }
             beginindent = tok;
             ++indentlevel;
         } else if (tok->str() == "}") {
@@ -4945,20 +4153,25 @@ bool Tokenizer::simplifyIfAddBraces()
         }
 
         if (Token::Match(tok, "if|for|while|BOOST_FOREACH (")) {
+
+            if (tok->strAt(2) == ")") {
+                //no arguments inside round braces, abort
+                syntaxError(tok);
+                return false;
+            }
             // don't add "{}" around ";" in "do {} while();" (#609)
             const Token *prev = tok->previous();
-            if (Token::simpleMatch(prev, "} while") &&
-                prev->link() &&
-                prev->link()->previous() &&
-                prev->link()->previous()->str() == "do") {
-                continue;
+            if (prev && prev->str() == "}" && tok->str() == "while") {
+                prev = prev->link()->previous();
+                if (prev && prev->str() == "do")
+                    continue;
             }
 
             // Goto the ending ')'
             tok = tok->next()->link();
 
-            // ')' should be followed by '{'
-            if (Token::simpleMatch(tok, ") {"))
+            // there's already '{' after ')', don't bother
+            if (tok->next() && tok->next()->str() == "{")
                 continue;
         }
 
@@ -4972,11 +4185,10 @@ bool Tokenizer::simplifyIfAddBraces()
             continue;
         }
 
-        // If there is no code after the if(), abort
+        // If there is no code after the 'if()' or 'else', abort
         if (!tok->next()) {
-            // This is a syntax error and we should call syntaxError() and return false but
-            // many tokenizer tests are written with this syntax error so just ignore it.
-            return true;
+            syntaxError(tok);
+            return false;
         }
 
         // insert open brace..
@@ -4984,7 +4196,7 @@ bool Tokenizer::simplifyIfAddBraces()
         tok = tok->next();
         Token *tempToken = tok;
 
-        bool innerIf = Token::simpleMatch(tempToken->next(), "if");
+        bool innerIf = (tempToken->next() && tempToken->next()->str() == "if");
 
         if (Token::simpleMatch(tempToken->next(), "do {"))
             tempToken = tempToken->linkAt(2);
@@ -4997,7 +4209,12 @@ bool Tokenizer::simplifyIfAddBraces()
         // * if (cond1) if (cond2) ; else ;
         while (NULL != (tempToken = tempToken->next())) {
             if (tempToken->str() == "{") {
-                if (Token::simpleMatch(tempToken->previous(),"else {")) {
+                if (tempToken->previous()->str() == "=") {
+                    tempToken = tempToken->link();
+                    continue;
+                }
+
+                if (tempToken->previous()->str() == "else") {
                     if (innerIf)
                         tempToken = tempToken->link();
                     else
@@ -5005,7 +4222,7 @@ bool Tokenizer::simplifyIfAddBraces()
                     break;
                 }
                 tempToken = tempToken->link();
-                if (!tempToken || !tempToken->next())
+                if (!tempToken->next())
                     break;
                 if (Token::simpleMatch(tempToken, "} else") && !Token::Match(tempToken->tokAt(2), "if|{"))
                     innerIf = false;
@@ -5029,11 +4246,10 @@ bool Tokenizer::simplifyIfAddBraces()
                 if (!innerIf)
                     break;
 
-                if (Token::simpleMatch(tempToken, "; else if"))
-                    ;
-                else if (Token::simpleMatch(tempToken, "; else"))
-                    innerIf = false;
-                else
+                if (Token::simpleMatch(tempToken, "; else")) {
+                    if (tempToken->strAt(2) != "if")
+                        innerIf = false;
+                } else
                     break;
             }
         }
@@ -5586,7 +4802,7 @@ void Tokenizer::simplifyCasts()
 }
 
 
-void Tokenizer::simplifyFunctionParameters()
+bool Tokenizer::simplifyFunctionParameters()
 {
     for (Token *tok = _tokens; tok; tok = tok->next()) {
         if (tok->str() == "{" || tok->str() == "[" || tok->str() == "(") {
@@ -5597,79 +4813,123 @@ void Tokenizer::simplifyFunctionParameters()
         else if (Token::Match(tok, "%var% ( %var% [,)]")) {
             // We have found old style function, now we need to change it
 
-            // backup pointer to the '(' token
-            Token * const tok1 = tok->next();
-
-            // Get list of argument names
-            std::map<std::string, Token*> argumentNames;
+            // First step: Get list of argument names in parenthesis
+            std::map<std::string, Token *> argumentNames;
             bool bailOut = false;
-            for (tok = tok->tokAt(2); tok; tok = tok->tokAt(2)) {
-                if (!Token::Match(tok, "%var% [,)]")) {
+            Token * tokparam = NULL;
+
+            //floating token used to check for parameters
+            Token *tok1 = tok;
+
+            //goto '('
+            tok = tok->next();
+
+            while (NULL != (tok1 = tok1->tokAt(2))) {
+                if (!Token::Match(tok1, "%var% [,)]")) {
                     bailOut = true;
                     break;
                 }
 
-                if (argumentNames.find(tok->str()) != argumentNames.end()) {
-                    // Invalid code, two arguments with the same name.
-                    // syntaxError(tok);
-                    // If you uncomment it, testrunner will fail:
-                    // testclass.cpp:3910
-                    // because of void Fred::foo5(int, int).
-                    // how should this be handled?
-                    bailOut = true;
-                    break;
-                }
+                //same parameters: take note of the parameter
+                if (argumentNames.find(tok1->str()) != argumentNames.end())
+                    tokparam = tok1;
+                else
+                    argumentNames[tok1->str()] = tok1;
 
-                argumentNames[tok->str()] = tok;
-                if (tok->next()->str() == ")") {
-                    tok = tok->tokAt(2);
+                if (tok1->next()->str() == ")") {
+                    tok1 = tok1->tokAt(2);
+                    //expect at least a type name after round brace..
+                    if (!tok1 || !tok1->isName())
+                        bailOut = true;
                     break;
                 }
             }
 
             if (bailOut) {
-                tok = tok1->link();
+                tok = tok->link();
                 continue;
             }
 
-            Token *start = tok;
-            while (tok && tok->str() != "{") {
-                if (tok->str() == ";") {
-                    tok = tok->previous();
-                    // Move tokens from start to tok into the place of
-                    // argumentNames[tok->str()] and remove the ";"
+            //there should be the sequence '; {' after the round parenthesis
+            if (!Token::findsimplematch(tok1, "; {")) {
+                tok = tok->link();
+                continue;
+            }
 
-                    if (argumentNames.find(tok->str()) == argumentNames.end()) {
+            // Last step: check out if the declarations between ')' and '{' match the parameters list
+            std::map<std::string, Token *> argumentNames2;
+
+            while (tok1 && tok1->str() != "{") {
+                if (tok1->str() == ";") {
+                    if (tokparam) {
+                        syntaxError(tokparam);
+                        return false;
+                    }
+                    Token *tok2 = tok1->previous();
+                    while (tok2->str() == "]")
+                        tok2 = tok2->link()->previous();
+
+                    //it should be a name..
+                    if (!tok2->isName()) {
                         bailOut = true;
                         break;
                     }
 
-                    // Remove the following ";"
-                    Token *temp = tok->tokAt(2);
-                    tok->deleteNext();
+                    if (argumentNames2.find(tok2->str()) != argumentNames2.end()) {
+                        //same parameter names...
+                        syntaxError(tok1);
+                        return false;
+                    } else
+                        argumentNames2[tok2->str()] = tok2;
 
-                    // Replace "x" with "int x" or similar
-                    Token::replace(argumentNames[tok->str()], start, tok);
-                    argumentNames.erase(tok->str());
-                    tok = temp;
-                    start = tok;
-                } else {
-                    tok = tok->next();
+                    if (argumentNames.find(tok2->str()) == argumentNames.end()) {
+                        //non-matching parameter... bailout
+                        bailOut = true;
+                        break;
+                    }
                 }
-            }
-
-            if (Token::simpleMatch(tok, "{"))
-                tok = tok->link();
-
-            if (tok == NULL) {
-                break;
+                tok1 = tok1->next();
             }
 
             if (bailOut) {
+                tok = tok->link();
                 continue;
             }
+
+            //the two containers should hold the same size..
+            if (argumentNames.size() != argumentNames2.size()) {
+                tok = tok->link();
+                //error if the second container is not empty
+                if (!argumentNames2.empty()) {
+                    syntaxError(tok);
+                    return false;
+                }
+                continue;
+            }
+
+            while (tok->str() != ")") {
+                //initialize start and end tokens to be moved
+                Token *declStart = argumentNames2[tok->next()->str()];
+                Token *declEnd = declStart;
+                while (declStart->previous()->str() != ";" && declStart->previous()->str() != ")")
+                    declStart = declStart->previous();
+                while (declEnd->next()->str() != ";" && declEnd->next()->str() != "{")
+                    declEnd = declEnd->next();
+
+                //remove ';' after declaration
+                declEnd->deleteNext();
+
+                //replace the parameter name in the parenthesis with all the declaration
+                Token::replace(tok->next(), declStart, declEnd);
+
+                //since there are changes to tokens, put tok where tok1 is
+                tok = declEnd->next();
+            }
+            //goto forward and continue
+            tok = tok->next()->link();
         }
     }
+    return true;
 }
 
 void Tokenizer::simplifyPointerToStandardType()
@@ -6095,14 +5355,14 @@ void Tokenizer::simplifyPlatformTypes()
         _settings->platformType == Settings::Win32W ||
         _settings->platformType == Settings::Win64) {
         for (Token *tok = _tokens; tok; tok = tok->next()) {
-            if (Token::Match(tok, "BOOL|INT|INT32"))
+            if (Token::Match(tok, "BOOL|INT|INT32|HFILE|LONG32"))
                 tok->str("int");
             else if (Token::Match(tok, "BOOLEAN|BYTE|UCHAR")) {
                 tok->str("unsigned");
                 tok->insertToken("char");
             } else if (tok->str() == "CHAR")
                 tok->str("char");
-            else if (Token::Match(tok, "DWORD|ULONG")) {
+            else if (Token::Match(tok, "DWORD|ULONG|COLORREF|LCID|LCTYPE|LGRPID")) {
                 tok->str("unsigned");
                 tok->insertToken("long");
             } else if (Token::Match(tok, "DWORD_PTR|ULONG_PTR|SIZE_T")) {
@@ -6112,21 +5372,19 @@ void Tokenizer::simplifyPlatformTypes()
                     tok->insertToken("long");
             } else if (tok->str() == "FLOAT")
                 tok->str("float");
-            else if (tok->str() == "HRESULT")
+            else if (Token::Match(tok, "HRESULT|LONG"))
                 tok->str("long");
-            else if (tok->str() == "INT64") {
+            else if (Token::Match(tok, "INT64|LONG64")) {
                 tok->str("long");
                 tok->insertToken("long");
-            } else if (tok->str() == "LONG")
-                tok->str("long");
-            else if (tok->str() == "LONG_PTR") {
+            } else if (Token::Match(tok, "LONG_PTR|LPARAM|LRESULT|SSIZE_T")) {
                 tok->str("long");
                 if (_settings->platformType == Settings::Win64)
                     tok->insertToken("long");
             } else if (Token::Match(tok, "LPBOOL|PBOOL")) {
                 tok->str("int");
                 tok->insertToken("*");
-            } else if (Token::Match(tok, "LPBYTE|PBOOLEAN|PBYTE")) {
+            } else if (Token::Match(tok, "LPBYTE|PBOOLEAN|PBYTE|PUCHAR")) {
                 tok->str("unsigned");
                 tok->insertToken("*");
                 tok->insertToken("char");
@@ -6138,7 +5396,7 @@ void Tokenizer::simplifyPlatformTypes()
                 tok->str("const");
                 tok->insertToken("*");
                 tok->insertToken("void");
-            } else if (tok->str() == "LPDWORD") {
+            } else if (Token::Match(tok, "LPDWORD|LPCOLORREF|PDWORD|PULONG")) {
                 tok->str("unsigned");
                 tok->insertToken("*");
                 tok->insertToken("long");
@@ -6151,26 +5409,31 @@ void Tokenizer::simplifyPlatformTypes()
             } else if (Token::Match(tok, "LPSTR|PSTR|PCHAR")) {
                 tok->str("char");
                 tok->insertToken("*");
-            } else if (Token::Match(tok, "LPVOID|PVOID|HANDLE")) {
+            } else if (Token::Match(tok, "LPVOID|PVOID|HANDLE|HBITMAP|HBRUSH|HCOLORSPACE|HCURSOR|HDC|HFONT|HGDIOBJ|HGLOBAL|HICON|HINSTANCE|HKEY|HLOCAL|HMENU|HMETAFILE|HMODULE|HPALETTE|HPEN|HRGN|HRSRC|HWND|SERVICE_STATUS_HANDLE|SC_LOCK|SC_HANDLE|HACCEL|HCONV|HCONVLIST|HDDEDATA|HDESK|HDROP|HDWP|HENHMETAFILE|HHOOK|HKL|HMONITOR|HSZ|HWINSTA")) {
                 tok->str("void");
                 tok->insertToken("*");
-            } else if (Token::Match(tok, "LPWORD|PWORD")) {
+            } else if ((tok->str() == "PHANDLE")) {
+                tok->str("void");
+                tok->insertToken("*");
+                tok->insertToken("*");
+            } else if (Token::Match(tok, "LPWORD|PWORD|PWSTR|PWCHAR|PUSHORT")) {
                 tok->str("unsigned");
                 tok->insertToken("*");
                 tok->insertToken("short");
             } else if (tok->str() == "SHORT")
                 tok->str("short");
-            else if (tok->str() == "UINT") {
+            else if (Token::Match(tok, "UINT|MMRESULT|SOCKET|ULONG32|UINT32|DWORD32")) {
                 tok->str("unsigned");
                 tok->insertToken("int");
-            } else if (tok->str() == "UINT_PTR") {
+            } else if (Token::Match(tok, "UINT_PTR|WPARAM")) {
                 tok->str("unsigned");
                 if (_settings->platformType == Settings::Win64) {
                     tok->insertToken("long");
                     tok->insertToken("long");
-                } else
-                    tok->insertToken("long");
-            } else if (Token::Match(tok, "USHORT|WORD|WCHAR|wchar_t")) {
+                } else {
+                    tok->insertToken("int");
+                }
+            } else if (Token::Match(tok, "USHORT|WORD|WCHAR|ATOM|wchar_t|LANGID")) {
                 tok->str("unsigned");
                 tok->insertToken("short");
             } else if (tok->str() == "VOID")
@@ -6182,6 +5445,12 @@ void Tokenizer::simplifyPlatformTypes()
                     tok->str("unsigned");
                     tok->insertToken("short");
                 }
+            } else if (tok->str() == "TBYTE") {
+                tok->str("unsigned");
+                if (_settings->platformType == Settings::Win32A)
+                    tok->insertToken("short");
+                else
+                    tok->insertToken("char");
             } else if (Token::Match(tok, "PTSTR|LPTSTR")) {
                 if (_settings->platformType == Settings::Win32A) {
                     tok->str("char");
@@ -6192,16 +5461,35 @@ void Tokenizer::simplifyPlatformTypes()
                     tok->insertToken("short");
                 }
             } else if (Token::Match(tok, "PCTSTR|LPCTSTR")) {
+                tok->str("const");
                 if (_settings->platformType == Settings::Win32A) {
-                    tok->str("const");
                     tok->insertToken("*");
                     tok->insertToken("char");
                 } else {
-                    tok->str("const");
                     tok->insertToken("*");
                     tok->insertToken("short");
                     tok->insertToken("unsigned");
                 }
+            } else if (Token::Match(tok, "ULONG64|DWORD64")) {
+                tok->str("unsigned");
+                tok->insertToken("long");
+            } else if (tok->str() == "HALF_PTR") {
+                if (_settings->platformType == Settings::Win64)
+                    tok->str("int");
+                else
+                    tok->str("short");
+            } else if (tok->str() == "INT_PTR") {
+                if (_settings->platformType == Settings::Win64) {
+                    tok->str("long");
+                    tok->insertToken("long");
+                } else {
+                    tok->str("int");
+                }
+            } else if (tok->str() == "LPCWSTR") {
+                tok->str("const");
+                tok->insertToken("*");
+                tok->insertToken("short");
+                tok->insertToken("unsigned");
             }
         }
     }
@@ -7450,213 +6738,7 @@ void Tokenizer::simplifyReference()
 
 bool Tokenizer::simplifyCalculations()
 {
-    bool ret = false;
-    for (Token *tok = _tokens; tok; tok = tok->next()) {
-        // Remove parentheses around variable..
-        // keep parentheses here: dynamic_cast<Fred *>(p);
-        // keep parentheses here: A operator * (int);
-        // keep parentheses here: int ( * ( * f ) ( ... ) ) (int) ;
-        // keep parentheses here: int ( * * ( * compilerHookVector ) (void) ) ( ) ;
-        // keep parentheses here: operator new [] (size_t);
-        // keep parentheses here: Functor()(a ... )
-        // keep parentheses here: ) ( var ) ;
-        if (Token::Match(tok->next(), "( %var% ) ;|)|,|]|%op%") &&
-            !tok->isName() &&
-            tok->str() != ">" &&
-            tok->str() != "]" &&
-            !Token::simpleMatch(tok->previous(), "operator") &&
-            !Token::simpleMatch(tok->previous(), "* )") &&
-            !Token::simpleMatch(tok->previous(), ") )") &&
-            !Token::Match(tok->tokAt(-2), "* %var% )") &&
-            !Token::Match(tok->tokAt(-2), "%type% ( ) ( %var%") &&
-            !Token::Match(tok, ") ( %var% ) ;")
-           ) {
-            tok->deleteNext();
-            tok = tok->next();
-            tok->deleteNext();
-            ret = true;
-        }
-
-        if (tok->str()[0] == '\'' && tok->str().size() == 3 &&
-            Token::Match(tok->previous(), "(|&&|%oror% %any% ==|!=|<=|<|>=|> %num% &&|%oror%|)")) {
-            tok->str(MathLib::toString(tok->str()[1] & 0xff));
-        }
-
-        if (tok->isNumber()) {
-            if (tok->str() == "0") {
-                if (Token::Match(tok->previous(), "[+-|] 0")) {
-                    tok = tok->previous();
-                    if (Token::Match(tok->tokAt(-4), "[;{}] %var% = %var% [+-|] 0 ;") &&
-                        tok->strAt(-3) == tok->previous()->str()) {
-                        tok = tok->tokAt(-3);
-                        tok->deleteNext(2);
-                        tok->deleteThis();
-                    }
-                    tok->deleteNext();
-                    tok->deleteThis();
-                    ret = true;
-                } else if (Token::Match(tok->previous(), "[=([,] 0 [+|]") ||
-                           Token::Match(tok->previous(), "return|case 0 [+|]")) {
-                    tok->deleteNext();
-                    tok->deleteThis();
-                    ret = true;
-                } else if (Token::Match(tok->previous(), "[=[(,] 0 * %any% ,|]|)|;|=|%op%") ||
-                           Token::Match(tok->previous(), "return|case 0 * %any% ,|:|;|=|%op%")) {
-                    tok->deleteNext();
-                    if (tok->next()->str() == "(")
-                        Token::eraseTokens(tok, tok->next()->link());
-                    tok->deleteNext();
-                    ret = true;
-                }
-            }
-
-            if (Token::simpleMatch(tok->previous(), "* 1") || Token::simpleMatch(tok, "1 *")) {
-                if (tok->previous()->isOp())
-                    tok = tok->previous();
-                tok->deleteNext();
-                tok->deleteThis();
-                ret = true;
-            }
-
-            // Remove parentheses around number..
-            if (Token::Match(tok->tokAt(-2), "%any% ( %num% )") && !tok->tokAt(-2)->isName() && tok->strAt(-2) != ">") {
-                tok = tok->previous();
-                tok->deleteThis();
-                tok->deleteNext();
-                ret = true;
-            }
-
-            if (Token::simpleMatch(tok->previous(), "( 0 ||") ||
-                Token::simpleMatch(tok->previous(), "|| 0 )") ||
-                Token::simpleMatch(tok->previous(), "( 0 |") ||
-                Token::simpleMatch(tok->previous(), "| 0 )") ||
-                Token::simpleMatch(tok->previous(), "( 1 &&") ||
-                Token::simpleMatch(tok->previous(), "&& 1 )")) {
-                if (tok->previous()->isOp())
-                    tok = tok->previous();
-                tok->deleteNext();
-                tok->deleteThis();
-                ret = true;
-            }
-
-            if (Token::Match(tok, "%num% ==|!=|<=|>=|<|> %num%") &&
-                MathLib::isInt(tok->str()) &&
-                MathLib::isInt(tok->strAt(2))) {
-                if (Token::Match(tok->previous(), "(|&&|%oror%") && Token::Match(tok->tokAt(3), ")|&&|%oror%")) {
-                    const MathLib::bigint op1(MathLib::toLongNumber(tok->str()));
-                    const std::string &cmp(tok->next()->str());
-                    const MathLib::bigint op2(MathLib::toLongNumber(tok->strAt(2)));
-
-                    std::string result;
-
-                    if (cmp == "==")
-                        result = (op1 == op2) ? "1" : "0";
-                    else if (cmp == "!=")
-                        result = (op1 != op2) ? "1" : "0";
-                    else if (cmp == "<=")
-                        result = (op1 <= op2) ? "1" : "0";
-                    else if (cmp == ">=")
-                        result = (op1 >= op2) ? "1" : "0";
-                    else if (cmp == "<")
-                        result = (op1 < op2) ? "1" : "0";
-                    else if (cmp == ">")
-                        result = (op1 > op2) ? "1" : "0";
-
-                    tok->str(result);
-                    tok->deleteNext(2);
-                    ret = true;
-                }
-            }
-
-            if (Token::Match(tok->previous(), "[([,=] %num% <<|>> %num%")) {
-                const MathLib::bigint op1(MathLib::toLongNumber(tok->str()));
-                const MathLib::bigint op2(MathLib::toLongNumber(tok->strAt(2)));
-                MathLib::bigint result;
-
-                if (tok->next()->str() == "<<")
-                    result = op1 << op2;
-                else
-                    result = op1 >> op2;
-
-                std::ostringstream ss;
-                ss << result;
-
-                tok->str(ss.str());
-                tok->deleteNext(2);
-            }
-        }
-
-        else if (tok->next() && tok->next()->isNumber()) {
-            // (1-2)
-            while (Token::Match(tok, "[[,(=<>+-*|&^] %num% [+-*/] %num% ]|,|)|;|=|%op%") ||
-                   Token::Match(tok, "<< %num% [+-*/] %num% ]|,|)|;|=|%op%") ||
-                   Token::Match(tok, "[[,(=<>+-*|&^] %num% [+-*/] %num% <<|>>") ||
-                   Token::Match(tok, "<< %num% [+-*/] %num% <<") ||
-                   Token::Match(tok, "[(,[] %num% [|&^] %num% [];,);]") ||
-                   Token::Match(tok, "(|%op% %num% [+-*/] %num% )|%op%") ||
-                   Token::Match(tok,"return|case %num% [+-*/] %num% ;|,|=|:|%op%")) {
-                tok = tok->next();
-
-                // Don't simplify "%num% / 0"
-                if (Token::simpleMatch(tok->next(), "/ 0"))
-                    continue;
-
-                // & | ^
-                if (Token::Match(tok->next(), "[&|^]")) {
-                    std::string result;
-                    const std::string first(tok->str());
-                    const std::string second(tok->strAt(2));
-                    const char op = tok->next()->str()[0];
-                    if (op == '&')
-                        result = MathLib::toString<MathLib::bigint>(MathLib::toLongNumber(first) & MathLib::toLongNumber(second));
-                    else if (op == '|')
-                        result = MathLib::toString<MathLib::bigint>(MathLib::toLongNumber(first) | MathLib::toLongNumber(second));
-                    else if (op == '^')
-                        result = MathLib::toString<MathLib::bigint>(MathLib::toLongNumber(first) ^ MathLib::toLongNumber(second));
-
-                    if (!result.empty()) {
-                        ret = true;
-                        tok->str(result);
-                        tok->deleteNext(2);
-                        continue;
-                    }
-                }
-
-                // Division where result is a whole number
-                if (Token::Match(tok->previous(), "* %num% /") &&
-                    tok->str() == MathLib::multiply(tok->strAt(2), MathLib::divide(tok->str(), tok->strAt(2)))) {
-                }
-
-                // + and - are calculated after * and /
-                else if (Token::Match(tok->next(), "[+-/]")) {
-                    if (Token::Match(tok->previous(), "[*/%]"))
-                        continue;
-                    if (Token::Match(tok->tokAt(3), "[*/%]"))
-                        continue;
-                }
-
-                if (Token::Match(tok->previous(), "- %num% - %num%"))
-                    tok->str(MathLib::add(tok->str(), tok->strAt(2)));
-                else if (Token::Match(tok->previous(), "- %num% + %num%"))
-                    tok->str(MathLib::subtract(tok->str(), tok->strAt(2)));
-                else
-                    tok->str(MathLib::calculate(tok->str(), tok->strAt(2), tok->next()->str()[0], this));
-
-                tok->deleteNext(2);
-
-                // evaluate "2 + 2 - 2 - 2"
-                // as (((2 + 2) - 2) - 2) = 0
-                // instead of ((2 + 2) - (2 - 2)) = 4
-                if (Token::Match(tok->next(), "[+-*/]")) {
-                    tok = tok->previous();
-                    continue;
-                }
-
-                ret = true;
-            }
-        }
-    }
-    return ret;
+    return TemplateSimplifier::simplifyCalculations(_tokens);
 }
 
 
@@ -7672,12 +6754,26 @@ void Tokenizer::simplifyGoto()
         if (tok->str() == "(" || tok->str() == "[")
             tok = tok->link();
 
-        else if (tok->str() == "{") {
-            if (Token::Match(tok->tokAt(-2),"class|namespace|struct|union %var% {") ||
-                Token::Match(tok->previous(),"namespace|struct|union {"))
+        else if (Token::Match(tok, "class|namespace|struct|union %type% :|{")) {
+            tok = tok->tokAt(2);
+            while (tok && !Token::Match(tok, "[;{=]"))
+                tok = tok->next();
+            if (tok && tok->str() == "{")
                 ++indentspecial;
-            else if ((!beginfunction && !indentlevel) ||
-                     (tok->previous() && tok->previous()->str() == "="))
+            else if (!tok)
+                break;
+            else
+                continue;
+        }
+
+        else if (Token::Match(tok, "namespace|struct|union {")) {
+            tok = tok->next();
+            ++indentspecial;
+        }
+
+        else if (tok->str() == "{") {
+            if ((!beginfunction && !indentlevel) ||
+                (tok->previous() && tok->previous()->str() == "="))
                 tok = tok->link();
             else
                 ++indentlevel;
@@ -7698,10 +6794,8 @@ void Tokenizer::simplifyGoto()
             }
         }
 
-        if (!indentlevel && Token::Match(tok, ") const| {")) {
-            gotos.clear();
+        if (!indentlevel && Token::Match(tok, ") const| {"))
             beginfunction = tok;
-        }
 
         else if (indentlevel && Token::Match(tok, "[{};] goto %var% ;"))
             gotos.push_back(tok->next());
@@ -8005,22 +7099,25 @@ void Tokenizer::simplifyEnum()
             tok = tok->previous();
         }
 
-        if (Token::Match(tok, "class|struct|namespace %any%") &&
+        if (Token::Match(tok, "class|struct|namespace") && tok->next() &&
             (!tok->previous() || (tok->previous() && tok->previous()->str() != "enum"))) {
             className = tok->next()->str();
             classLevel = 0;
-            continue;
         } else if (tok->str() == "}") {
             --classLevel;
             if (classLevel < 0)
                 className = "";
-
-            continue;
         } else if (tok->str() == "{") {
             ++classLevel;
-            continue;
-        } else if (Token::Match(tok, "enum class|struct| {|:") ||
-                   Token::Match(tok, "enum class|struct| %type% {|:|;")) {
+        } else if (tok->str() == "enum") {
+            Token *temp = tok->next();
+            if (!temp)
+                break;
+            if (Token::Match(temp, "class|struct"))
+                temp = temp->next();
+            if (!Token::Match(temp, "[{:]") &&
+                (!temp->isName() || !Token::Match(temp->next(), "[{:;]")))
+                continue;
             Token *start = tok;
             Token *enumType = 0;
             Token *typeTokenStart = 0;
@@ -8031,7 +7128,7 @@ void Tokenizer::simplifyEnum()
                 tok->deleteNext();
 
             // check for name
-            if (Token::Match(tok->next(), "%type%")) {
+            if (tok->next()->isName()) {
                 enumType = tok->next();
                 tok = tok->next();
             }
@@ -9362,7 +8459,7 @@ void Tokenizer::simplifyStructDecl()
 
 void Tokenizer::simplifyCallingConvention()
 {
-    const char pattern[] = "__cdecl|__stdcall|__fastcall|__thiscall|__clrcall|__syscall|__pascal|__fortran|__far|__near|WINAPI|APIENTRY|CALLBACK";
+    static const char pattern[] = "__cdecl|__stdcall|__fastcall|__thiscall|__clrcall|__syscall|__pascal|__fortran|__far|__near|WINAPI|APIENTRY|CALLBACK";
     for (Token *tok = _tokens; tok; tok = tok->next()) {
         while (Token::Match(tok, pattern)) {
             tok->deleteThis();
@@ -9405,7 +8502,7 @@ void Tokenizer::simplifyAttribute()
 // Remove "volatile", "inline", "register", and "restrict"
 void Tokenizer::simplifyKeyword()
 {
-    const char pattern[] = "volatile|inline|__inline|__forceinline|register|restrict|__restrict|__restrict__";
+    static const char pattern[] = "volatile|inline|__inline|__forceinline|register|restrict|__restrict|__restrict__";
     for (Token *tok = _tokens; tok; tok = tok->next()) {
         while (Token::Match(tok, pattern)) {
             tok->deleteThis();
@@ -9512,7 +8609,13 @@ void Tokenizer::simplifyAsm()
 // Simplify bitfields
 void Tokenizer::simplifyBitfields()
 {
+    bool goback = false;
     for (Token *tok = _tokens; tok; tok = tok->next()) {
+
+        if (goback) {
+            goback = false;
+            tok = tok->previous();
+        }
         Token *last = 0;
 
         if (Token::Match(tok, ";|{|}|public:|protected:|private: const| %type% %var% :") &&
@@ -9522,8 +8625,11 @@ void Tokenizer::simplifyBitfields()
             if (tok1 && tok1->tokAt(2) &&
                 (tok1->tokAt(2)->isBoolean() || Token::Match(tok1->tokAt(2), "%num%") ||
                  !Token::Match(tok1->tokAt(2), "public|protected|private| %type% ::|<|,|{|;"))) {
-                while (tok1->next() && !Token::Match(tok1->next(), ";|,"))
+                while (tok1->next() && !Token::Match(tok1->next(), "[;,)]{}]")) {
+                    if (Token::Match(tok1->next(), "[([]"))
+                        Token::eraseTokens(tok1, tok1->next()->link());
                     tok1->deleteNext();
+                }
 
                 last = tok1->next();
             }
@@ -9533,7 +8639,7 @@ void Tokenizer::simplifyBitfields()
 
             if (tok->strAt(3 + offset) != "{") {
                 tok->deleteNext(4+offset);
-                tok = tok->previous();
+                goback = true;
             }
         }
 
@@ -10085,4 +9191,36 @@ void Tokenizer::printUnknownTypes()
         if (_errorLogger)
             _errorLogger->reportOut(ss.str());
     }
+}
+
+std::string Tokenizer::getSourceFilePath() const
+{
+    if (_files.empty())
+        return std::string("");
+    return _files[0];
+}
+
+bool Tokenizer::isJava() const
+{
+    return Path::isJava(getSourceFilePath());
+}
+
+bool Tokenizer::isCSharp() const
+{
+    return Path::isCSharp(getSourceFilePath());
+}
+
+bool Tokenizer::isJavaOrCSharp() const
+{
+    return isJava() || isCSharp();
+}
+
+bool Tokenizer::isC() const
+{
+    return Path::isC(getSourceFilePath());
+}
+
+bool Tokenizer::isCPP() const
+{
+    return Path::isCPP(getSourceFilePath());
 }

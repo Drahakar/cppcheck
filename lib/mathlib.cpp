@@ -1,6 +1,6 @@
 /*
  * Cppcheck - A tool for static C/C++ code analysis
- * Copyright (C) 2007-2011 Daniel Marjamäki and Cppcheck team.
+ * Copyright (C) 2007-2012 Daniel Marjamäki and Cppcheck team.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,7 +19,7 @@
 
 
 #include "mathlib.h"
-#include "tokenize.h"
+#include "errorlogger.h"
 
 #include <string>
 #include <sstream>
@@ -222,7 +222,7 @@ std::string MathLib::multiply(const std::string &first, const std::string &secon
     return toString<double>(toDoubleNumber(first) * toDoubleNumber(second));
 }
 
-std::string MathLib::calculate(const std::string &first, const std::string &second, char action, const Tokenizer *tokenizer)
+std::string MathLib::calculate(const std::string &first, const std::string &second, char action)
 {
     std::string result("0");
 
@@ -244,8 +244,7 @@ std::string MathLib::calculate(const std::string &first, const std::string &seco
         break;
 
     default:
-        tokenizer->cppcheckError(0);
-        break;
+        throw InternalError(0, std::string("Unexpected action '") + action + "' in MathLib::calculate(). Please report this to Cppcheck developers.");
     }
 
     return result;

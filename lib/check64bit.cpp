@@ -1,6 +1,6 @@
 /*
  * Cppcheck - A tool for static C/C++ code analysis
- * Copyright (C) 2007-2011 Daniel Marjamäki and Cppcheck team.
+ * Copyright (C) 2007-2012 Daniel Marjamäki and Cppcheck team.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -33,8 +33,7 @@ namespace {
 /** Is given variable a pointer or array? */
 static bool isaddr(const Variable *var)
 {
-    const Token *nametok = var ? var->nameToken() : 0;
-    return (var && (nametok->strAt(-2) == "*" || nametok->strAt(-1) == "*" || nametok->strAt(1) == "["));
+    return (var && (var->isPointer() || var->isArray()));
 }
 
 /** Is given variable an integer variable */

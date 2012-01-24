@@ -1,6 +1,6 @@
 /*
  * Cppcheck - A tool for static C/C++ code analysis
- * Copyright (C) 2007-2011 Daniel Marjamäki and Cppcheck team.
+ * Copyright (C) 2007-2012 Daniel Marjamäki and Cppcheck team.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -84,6 +84,7 @@ private:
         TEST_CASE(returnReference2);
         TEST_CASE(returnReference3);
         TEST_CASE(returnReference4);
+        TEST_CASE(returnReference5);
 
         // return c_str()..
         TEST_CASE(returncstr1);
@@ -297,7 +298,7 @@ private:
               "char tmp[256];\n"
               "free (tmp);\n"
               "}\n");
-        ASSERT_EQUALS(std::string("[test.cpp:5]: (error) Invalid deallocation\n"), errout.str());
+        ASSERT_EQUALS(std::string("[test.cpp:5]: (error) Deallocating auto-variable is invalid\n"), errout.str());
 
         check("void f()\n"
               "{\n"
@@ -474,6 +475,26 @@ private:
               "    double & ref = a;\n"
               "    return ref;\n"
               "}\n");
+        ASSERT_EQUALS("", errout.str());
+    }
+
+    void returnReference5() {
+        check("struct A {\n"
+              "    int i;\n"
+              "};\n"
+
+              "struct B {\n"
+              "    A a;\n"
+              "};\n"
+
+              "struct C {\n"
+              "    B *b;\n"
+              "    const A& a() const {\n"
+              "        const B *pb = b;\n"
+              "        const A &ra = pb->a;\n"
+              "        return ra;\n"
+              "    }\n"
+              "};");
         ASSERT_EQUALS("", errout.str());
     }
 

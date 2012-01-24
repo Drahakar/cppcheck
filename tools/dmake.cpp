@@ -1,6 +1,6 @@
 /*
  * Cppcheck - A tool for static C/C++ code analysis
- * Copyright (C) 2007-2011 Daniel Marjamäki and Cppcheck team.
+ * Copyright (C) 2007-2012 Daniel Marjamäki and Cppcheck team.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -251,8 +251,10 @@ int main(int argc, char **argv)
                                 "-Wextra "
                                 "-Wabi "
                                 "-Wcast-qual "
+//                                "-Wconversion "
                                 "-Wfloat-equal "
                                 "-Winline "
+//                                "-Wlogical-op "
                                 "-Wmissing-declarations "
                                 "-Wmissing-format-attribute "
                                 "-Wno-long-long "
@@ -260,10 +262,9 @@ int main(int argc, char **argv)
                                 "-Wpacked "
                                 "-Wredundant-decls "
                                 "-Wshadow "
+//                                "-Wsign-conversion "
                                 "-Wsign-promo "
 //                                "-Wunreachable-code "
-//                                "-Wsign-conversion "
-//                                "-Wconversion "
                                 "$(CPPCHK_GLIBCXX_DEBUG) "
                                 "-g");
     }

@@ -1,6 +1,6 @@
 /*
  * Cppcheck - A tool for static C/C++ code analysis
- * Copyright (C) 2007-2011 Daniel Marjamäki and Cppcheck team.
+ * Copyright (C) 2007-2012 Daniel Marjamäki and Cppcheck team.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -65,6 +65,8 @@ private:
 
 #ifdef THREADING_MODEL_FORK
 private:
+    enum PipeSignal {REPORT_OUT='1',REPORT_ERROR='2', CHILD_END='3'};
+
     /**
      * Read from the pipe, parse and handle what ever is in there.
      *@return -1 in case of error
@@ -72,13 +74,14 @@ private:
      *         1 if we did read something
      */
     int handleRead(int rpipe, unsigned int &result);
-    void writeToPipe(char type, const std::string &data);
+    void writeToPipe(PipeSignal type, const std::string &data);
     /**
      * Write end of status pipe, different for each child.
      * Not used in master process.
      */
     int _wpipe;
     std::list<std::string> _errorList;
+
 public:
     /**
      * @return true if support for threads exist.

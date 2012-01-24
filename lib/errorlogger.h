@@ -1,6 +1,6 @@
 /*
  * Cppcheck - A tool for static C/C++ code analysis
- * Copyright (C) 2007-2011 Daniel Marjamäki and Cppcheck team.
+ * Copyright (C) 2007-2012 Daniel Marjamäki and Cppcheck team.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -281,6 +281,12 @@ public:
     static std::string callStackToString(const std::list<ErrorLogger::ErrorMessage::FileLocation> &callStack);
 };
 
+/** @brief Simple container to be thrown when internal error is detected. */
+struct InternalError {
+    InternalError(const Token *tok, const std::string &errorMsg);
+    const Token *token;
+    std::string errorMessage;
+};
 
 /// @}
 

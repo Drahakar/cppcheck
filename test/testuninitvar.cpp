@@ -1,6 +1,6 @@
 /*
  * Cppcheck - A tool for static C/C++ code analysis
- * Copyright (C) 2007-2011 Daniel Marjamäki and Cppcheck team.
+ * Copyright (C) 2007-2012 Daniel Marjamäki and Cppcheck team.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -527,6 +527,13 @@ private:
                        "    return x() ? i : 0;\n"
                        "}\n");
         TODO_ASSERT_EQUALS("[test.cpp:2]: (error) Uninitialized variable: i\n", "", errout.str());
+
+        // Ticket #3480 - Don't crash garbage code
+        checkUninitVar("int f()\n"
+                       "{\n"
+                       "    return if\n"
+                       "}\n");
+        ASSERT_EQUALS("", errout.str());
     }
 
 
@@ -1125,6 +1132,20 @@ private:
                        "    printf(\"%s\", a);\n"
                        "}");
         ASSERT_EQUALS("[test.cpp:3]: (error) Uninitialized variable: a\n", errout.str());
+
+        checkUninitVar("void f() {\n"    // Ticket #3497
+                       "    char header[1];\n"
+                       "    *((unsigned char*)(header)) = 0xff;\n"
+                       "    return header[0];\n"
+                       "}\n");
+        ASSERT_EQUALS("", errout.str());
+
+        checkUninitVar("void f() {\n"    // Ticket #3497
+                       "    char header[1];\n"
+                       "    *((unsigned char*)((unsigned char *)(header))) = 0xff;\n"
+                       "    return header[0];\n"
+                       "}\n");
+        ASSERT_EQUALS("", errout.str());
     }
 
     // alloc..
@@ -1752,6 +1773,13 @@ private:
                         "}");
         ASSERT_EQUALS("[test.cpp:3]: (error) Uninitialized variable: x\n", errout.str());
 
+        // ?:
+        checkUninitVar2("int f(int *ptr) {\n"
+                        "    int a;\n"
+                        "    int *p = ptr ? ptr : &a;\n"
+                        "}");
+        ASSERT_EQUALS("", errout.str());
+
         // = { .. }
         checkUninitVar2("int f() {\n"
                         "    int a;\n"
@@ -1998,6 +2026,16 @@ private:
                         "    typeof(*abc);\n"
                         "}");
         ASSERT_EQUALS("", errout.str());
+
+        // Ticket #3486 - Don't crash garbage code
+        checkUninitVar2("void f()\n"
+                        "{\n"
+                        "  (\n"
+                        "    x;\n"
+                        "    int a, a2, a2*x; if () ;\n"
+                        "  )\n"
+                        "}\n");
+        ASSERT_EQUALS("[test.cpp:5]: (error) Uninitialized variable: a2\n", errout.str());
     }
 };
 

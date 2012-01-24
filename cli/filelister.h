@@ -1,6 +1,6 @@
 /*
  * Cppcheck - A tool for static C/C++ code analysis
- * Copyright (C) 2007-2011 Daniel Marjamäki and Cppcheck team.
+ * Copyright (C) 2007-2012 Daniel Marjamäki and Cppcheck team.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -42,14 +42,6 @@ public:
     static void recursiveAddFiles(std::vector<std::string> &filenames,
                                   std::map<std::string, long> &filesizes,
                                   const std::string &path);
-
-    /**
-     * @brief Check if the file extension indicates that it's a source file.
-     * Check if the file has source file extension: *.c;*.cpp;*.cxx;*.c++;*.cc;*.txx
-     * @param filename filename to check
-     * @return returns true if the file extension indicates it should be checked
-     */
-    static bool acceptFile(const std::string &filename);
 
     /**
      * @brief Is given path a directory?
